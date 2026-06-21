@@ -1,0 +1,56 @@
+name: Linux x86
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+
+jobs:
+  build:
+    name: ${{ matrix.side }} ${{ matrix.config }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        side: [sv, cl]
+        config: [debug, release]
+        include:
+          - config: debug
+            dir: Debug
+          - config: release
+            dir: Release
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: repository
+
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gcc-multilib g++-multilib uuid-dev
+
+      - name: Install Premake5
+        run: |
+          git clone --depth=1 https://github.com/premake/premake-core.git
+          cd premake-core
+          make -f Bootstrap.mak linux
+          mv ./bin/release/premake5 ../repository/
+
+      - name: Generate makefiles
+        run: |
+          cd repository
+          ./premake5 gmake
+
+      - name: Build
+        run: |
+          cd repository/build
+          make -f plugin_crashcapture86_${{ matrix.side }}.make config=${{ matrix.config }}_x86
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.side }}_${{ matrix.config }}_x86_linux
+          path: repository/bin/x86/${{ matrix.dir }}/*
+          if-no-files-found: warn

@@ -1,0 +1,54 @@
+name: Windows x86
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+
+jobs:
+  build:
+    name: ${{ matrix.side }} ${{ matrix.config }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        side: [sv, cl]
+        config: [Debug, Release]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: repository
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install Premake5
+        shell: pwsh
+        run: |
+          $headers = @{ "User-Agent" = "actions"; "Authorization" = "Bearer ${{ github.token }}" }
+          $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/premake/premake-core/releases" -Headers $headers
+          $rel = $releases | Where-Object { -not $_.draft } | Select-Object -First 1
+          $url = ($rel.assets | Where-Object { $_.name -like "*windows.zip" } | Select-Object -First 1).browser_download_url
+          Invoke-WebRequest -Uri $url -OutFile premake.zip -Headers $headers
+          Expand-Archive -Path premake.zip -DestinationPath repository -Force
+
+      - name: Generate projects
+        shell: pwsh
+        run: |
+          cd repository
+          .\premake5.exe vs2022
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cd repository\build
+          msbuild plugin_crashcapture86_${{ matrix.side }}.sln /p:Configuration=${{ matrix.config }}
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.side }}_${{ matrix.config }}_x86_windows
+          path: repository/bin/x86/${{ matrix.config }}/*
+          if-no-files-found: warn

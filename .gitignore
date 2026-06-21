@@ -1,0 +1,22 @@
+# Premake-generated build files
+/build/
+Makefile
+*.make
+
+# Build artifacts
+/bin/
+/bin-int/
+*.obj
+*.o
+*.so
+*.dll
+*.lib
+*.a
+*.exp
+*.pdb
+
+# Logs / dumps
+*.log
+*.dmp
+*.md
+!README.md
