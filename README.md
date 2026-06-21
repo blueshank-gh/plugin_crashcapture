@@ -51,7 +51,7 @@ The defaults are sensible, so you only need these if you want to change somethin
 | `CRASHCAPTURE_SYMBOLS` | `1` | Add function names and source lines to reports when debug info is available. No effect when it isn't. |
 | `CRASHCAPTURE_DISABLE` | `0` | Set to `1` to make the plugin do nothing at all. Handy for ruling it out when troubleshooting. |
 | `CRASHCAPTURE_DIR` | `crashes` | Folder to write reports into (relative to the GMod root). |
-| `CRASHCAPTURE_MAX_AGE_DAYS` | `0` | At startup, delete reports in the crash folder older than this many days, so they don't pile up. `0` keeps them forever. |
+| `CRASHCAPTURE_MAX_AGE_DAYS` | `14` | At startup, delete reports in the crash folder older than this many days, so they don't pile up. `0` keeps them forever. |
 | `CRASHCAPTURE_SCRIPT` | _(none)_ | Path to a Lua script run in a fresh, isolated state on each crash for live memory diagnostics (see below). Off when unset. |
 
 ## Live memory diagnostics (`CRASHCAPTURE_SCRIPT`)

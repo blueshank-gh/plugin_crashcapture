@@ -73,7 +73,7 @@ namespace CrashCapture {
         Config& c = Cfg();
         c.timeout_sec = EnvInt("CRASHCAPTURE_TIMEOUT", 10);
         c.hang_kill_sec = EnvInt("CRASHCAPTURE_HANG_KILL", 0);
-        c.max_age_days = EnvInt("CRASHCAPTURE_MAX_AGE_DAYS", 0);
+        c.max_age_days = EnvInt("CRASHCAPTURE_MAX_AGE_DAYS", 14);
         c.loopbreak = EnvInt("CRASHCAPTURE_LOOPBREAK", 1) != 0;
         
         // First-chance VEH off on the client: the D3D/ShaderAPI bring-up uses SEH as control flow and intercepting it can break startup.
