@@ -502,10 +502,11 @@ namespace CrashCapture {
         L->SetField(-2, "CrashCapture_Pulse");
         L->Pop();
 
-        // Repeating timer for calling the pulse
         static const char* kInstall =
             "if timer and timer.Create then "
             "timer.Create('CrashCapture_Heartbeat', 0.1, 0, CrashCapture_Pulse) end "
+            "if hook and hook.Add then "
+            "hook.Add('GetGameDescription', 'CrashCapture_Heartbeat', CrashCapture_Pulse) end "
             "CrashCapture_Pulse()";
         L->RunStringEx("crashcapture", "", kInstall, true, false, true, true);
 

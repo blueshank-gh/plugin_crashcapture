@@ -67,7 +67,6 @@ public:
     virtual void          GameFrame(bool simulating) = 0;
     virtual void          LevelShutdown(void) = 0;
     virtual void          ClientActive(edict_t* pEntity) = 0;
-    virtual void          ClientFullyConnect(edict_t* pEntity) = 0;
     virtual void          ClientDisconnect(edict_t* pEntity) = 0;
     virtual void          ClientPutInServer(edict_t* pEntity, const char* playername) = 0;
     virtual void          SetCommandClient(int index) = 0;
@@ -99,7 +98,6 @@ public:
     }
     void          LevelShutdown(void) override { CrashCapture::Grace(30); }
     void          ClientActive(edict_t*) override {}
-    void          ClientFullyConnect(edict_t*) override {}
     void          ClientDisconnect(edict_t*) override {}
     void          ClientPutInServer(edict_t*, const char*) override {}
     void          SetCommandClient(int) override {}
