@@ -115,6 +115,8 @@ namespace CrashCapture {
     bool Lua_BreakLoop(const char* msg);
     void Lua_InstallHeartbeat(void* iface);
     void Lua_InstallHeartbeatAll();
+    void Lua_InstallApi(void* iface);
+    bool Lua_EnsureApi();
     void* Lua_SharedHandle();
     void* Lua_Sym(void* mod, const char* name);
 

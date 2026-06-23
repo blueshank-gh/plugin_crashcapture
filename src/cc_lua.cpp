@@ -8,6 +8,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #if defined(CC_WINDOWS)
     #define WIN32_LEAN_AND_MEAN
@@ -63,7 +64,12 @@ namespace CrashCapture {
         int         (*getstack)(lua_State*, int, cc_lua_Debug*);
         int         (*getinfo)(lua_State*, const char*, cc_lua_Debug*);
         const char* (*getlocal)(lua_State*, const cc_lua_Debug*, int);
-        bool        ok;
+        void        (*pushnil)(lua_State*);
+        void        (*pushnumber)(lua_State*, double);
+        void        (*pushboolean)(lua_State*, int);
+        void        (*pushstring)(lua_State*, const char*);
+        bool        ok; // stack-walk API resolved
+        bool        push_ok; // push API resolved
     };
 
     static const char* kGmodTypeName[] = {
@@ -167,6 +173,13 @@ namespace CrashCapture {
         }
         g_api.ok = all;
         if (all) g_apiDiag = "ok";
+
+        // specific for the crash capture API
+        g_api.pushnil = (void(*)(lua_State*)) Lua_Sym(m, "lua_pushnil");
+        g_api.pushnumber = (void(*)(lua_State*, double)) Lua_Sym(m, "lua_pushnumber");
+        g_api.pushboolean = (void(*)(lua_State*, int)) Lua_Sym(m, "lua_pushboolean");
+        g_api.pushstring = (void(*)(lua_State*, const char*)) Lua_Sym(m, "lua_pushstring");
+        g_api.push_ok = g_api.pushnil && g_api.pushnumber && g_api.pushboolean && g_api.pushstring;
     }
 
     static const char* RealmName(int r)
@@ -189,6 +202,7 @@ namespace CrashCapture {
         ILuaInterface* l = (ILuaInterface*)iface;
         int r = RealmOf(l);
         if (r >= 0) g_realm[r] = l;
+        Lua_InstallApi(iface);
         Lua_InstallHeartbeat(iface);
     }
 
@@ -502,6 +516,168 @@ namespace CrashCapture {
     {
         Lua_RefreshStates();
         for (int r = 0; r < 3; ++r)
-            if (g_realm[r]) Lua_InstallHeartbeat(g_realm[r]);
+            if (g_realm[r]) { Lua_InstallApi(g_realm[r]); Lua_InstallHeartbeat(g_realm[r]); }
+    }
+
+    // --------- lua-api ---
+
+    enum CfgKind { CK_INT, CK_BOOL, CK_STR };
+    struct CfgEntry { const char* key; int kind; void* ptr; size_t cap; };
+
+    static int BuildCfgTable(CfgEntry* t)
+    {
+        Config& c = Cfg();
+        int n = 0;
+        t[n++] = {"timeout", CK_INT, &c.timeout_sec, 0};
+        t[n++] = {"hang_kill", CK_INT, &c.hang_kill_sec, 0};
+        t[n++] = {"max_age_days", CK_INT, &c.max_age_days, 0};
+        t[n++] = {"loopbreak", CK_BOOL, &c.loopbreak, 0};
+        t[n++] = {"firstchance", CK_BOOL, &c.firstchance, 0};
+        t[n++] = {"window_watchdog", CK_BOOL, &c.window_watchdog, 0};
+        t[n++] = {"lua_heartbeat", CK_BOOL, &c.lua_heartbeat, 0};
+        t[n++] = {"symbols", CK_BOOL, &c.symbols, 0};
+        t[n++] = {"dir", CK_STR,  c.dir, sizeof(c.dir)};
+        t[n++] = {"script", CK_STR,  c.script, sizeof(c.script)};
+        return n;
+    }
+
+    static const CfgEntry* FindCfg(const char* key, CfgEntry* buf)
+    {
+        int n = BuildCfgTable(buf);
+        for (int i = 0; i < n; ++i)
+            if (strcmp(buf[i].key, key) == 0) return &buf[i];
+        return NULL;
+    }
+
+    // "disable" isn't a Config field, it's a lifecycle state we drive directly.
+    static bool g_luaDisabled = false;
+
+    static void ApplyDisable(bool disable)
+    {
+        if (disable == g_luaDisabled) return;
+        g_luaDisabled = disable;
+        if (disable) {
+            Shutdown();
+        } else {
+            InstallHandlers();
+            if (Cfg().timeout_sec > 0) Watchdog_Start(false);
+        }
+    }
+
+    static int cc_lua_set(lua_State* L)
+    {
+        if (!g_api.ok) return 0;
+        if (g_api.gettop(L) < 2 || g_api.type(L, 1) != CC_LT_STR) return 0;
+        const char* key = g_api.tolstring(L, 1, NULL);
+        if (!key) return 0;
+
+        if (strcmp(key, "disable") == 0) {
+            ApplyDisable(g_api.toboolean(L, 2) != 0);
+            return 0;
+        }
+
+        CfgEntry buf[16];
+        const CfgEntry* e = FindCfg(key, buf);
+        if (!e) return 0;
+
+        switch (e->kind) {
+            case CK_INT: *(int*)e->ptr = (int)g_api.tonumber(L, 2); break;
+            case CK_BOOL: *(bool*)e->ptr = g_api.toboolean(L, 2) != 0; break;
+            case CK_STR: {
+                const char* s = g_api.tolstring(L, 2, NULL);
+                snprintf((char*)e->ptr, e->cap, "%s", s ? s : "");
+                break;
+            }
+        }
+
+        if (strcmp(key, "timeout") == 0) {
+            if (Cfg().timeout_sec > 0) Watchdog_Start(false);
+        } else if (strcmp(key, "lua_heartbeat") == 0) {
+            if (Cfg().lua_heartbeat) Lua_InstallHeartbeatAll();
+        }
+
+        return 0;
+    }
+
+    static int cc_lua_get(lua_State* L)
+    {
+        if (!g_api.ok || !g_api.push_ok) return 0;
+        if (g_api.gettop(L) < 1 || g_api.type(L, 1) != CC_LT_STR) return 0;
+        const char* key = g_api.tolstring(L, 1, NULL);
+        if (!key) return 0;
+
+        if (strcmp(key, "disable") == 0) { g_api.pushboolean(L, g_luaDisabled); return 1; }
+
+        CfgEntry buf[16];
+        const CfgEntry* e = FindCfg(key, buf);
+        if (!e) { g_api.pushnil(L); return 1; }
+
+        switch (e->kind) {
+            case CK_INT: g_api.pushnumber(L, (double)*(int*)e->ptr); break;
+            case CK_BOOL: g_api.pushboolean(L, *(bool*)e->ptr ? 1 : 0); break;
+            case CK_STR: g_api.pushstring(L, (const char*)e->ptr); break;
+        }
+        return 1;
+    }
+
+    static bool g_apiInstalled[3] = { false, false, false };
+    static void* g_apiState[3] = { NULL, NULL, NULL };
+
+    void Lua_InstallApi(void* iface)
+    {
+        ILuaInterface* L = (ILuaInterface*)iface;
+        if (!L) return;
+
+        int r = RealmOf(L);
+        if (r >= 0) {
+            if (g_apiInstalled[r]) return;
+            g_realm[r] = L;
+        }
+
+        {
+            const char* dis = getenv("CRASHCAPTURE_DISABLE");
+            if (dis && atoi(dis) != 0) g_luaDisabled = true;
+        }
+
+        L->PushSpecial(GarrysMod::Lua::SPECIAL_GLOB);
+        L->CreateTable();
+            L->PushCFunction(cc_lua_set); L->SetField(-2, "set");
+            L->PushCFunction(cc_lua_get); L->SetField(-2, "get");
+            L->PushCFunction(cc_lua_pulse); L->SetField(-2, "pulse");
+        L->SetField(-2, "crashcapture");
+        L->Pop();
+
+        if (r >= 0) g_apiInstalled[r] = true;
+    }
+
+    bool Lua_EnsureApi()
+    {
+        Lua_RefreshStates();
+        if (!g_shared) return false;
+
+        bool serverReady = false;
+        for (int r = 0; r < 3; ++r) {
+            ILuaInterface* l = g_shared->GetLuaInterface((unsigned char)r);
+            if (!l || !Mem_IsReadable(l, 2 * sizeof(void*))) {
+                g_realm[r] = NULL;
+                g_apiState[r] = NULL;
+                g_apiInstalled[r] = false;
+                g_hbInstalled[r] = false;
+                continue;
+            }
+
+            void* st = (void*)l->GetState();
+            if (st && (l != g_realm[r] || st != g_apiState[r])) {
+                g_realm[r] = l;
+                g_apiState[r] = st;
+                g_apiInstalled[r] = false;
+                g_hbInstalled[r] = false;
+                Lua_InstallApi(l);
+                Lua_InstallHeartbeat(l);
+            }
+
+            if (r == LuaState::SERVER && g_apiInstalled[r]) serverReady = true;
+        }
+        return serverReady;
     }
 }

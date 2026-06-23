@@ -67,6 +67,7 @@ public:
     virtual void          GameFrame(bool simulating) = 0;
     virtual void          LevelShutdown(void) = 0;
     virtual void          ClientActive(edict_t* pEntity) = 0;
+    virtual void          ClientFullyConnect(edict_t* pEntity) = 0;
     virtual void          ClientDisconnect(edict_t* pEntity) = 0;
     virtual void          ClientPutInServer(edict_t* pEntity, const char* playername) = 0;
     virtual void          SetCommandClient(int index) = 0;
@@ -82,6 +83,7 @@ public:
 };
 
 class CrashCapturePlugin : public IServerPluginCallbacks {
+    unsigned m_frame = 0;
 public:
     bool          Load(CreateInterfaceFn, CreateInterfaceFn) override { CrashCapture::Init(); return true; }
     void          Unload(void) override { CrashCapture::Shutdown(); }
@@ -90,9 +92,14 @@ public:
     const char*   GetPluginDescription(void) override { return "plugin_crashcapture v" CC_VERSION; }
     void          LevelInit(const char*) override { CrashCapture::Grace(60); }
     void          ServerActivate(edict_t*, int, int) override {}
-    void          GameFrame(bool) override { CrashCapture::Pulse(); }
+    void          GameFrame(bool) override {
+        CrashCapture::Pulse();
+        // TODO: we need to switch off of this for plugins, its unreliable.
+        if ((++m_frame & 15) == 0) CrashCapture::Lua_EnsureApi();
+    }
     void          LevelShutdown(void) override { CrashCapture::Grace(30); }
     void          ClientActive(edict_t*) override {}
+    void          ClientFullyConnect(edict_t*) override {}
     void          ClientDisconnect(edict_t*) override {}
     void          ClientPutInServer(edict_t*, const char*) override {}
     void          SetCommandClient(int) override {}

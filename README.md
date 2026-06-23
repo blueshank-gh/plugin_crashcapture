@@ -54,6 +54,32 @@ The defaults are sensible, so you only need these if you want to change somethin
 | `CRASHCAPTURE_MAX_AGE_DAYS` | `14` | At startup, delete reports in the crash folder older than this many days, so they don't pile up. `0` keeps them forever. |
 | `CRASHCAPTURE_SCRIPT` | _(none)_ | Path to a Lua script run in a fresh, isolated state on each crash for live memory diagnostics (see below). Off when unset. |
 
+### Lua Settings
+
+Some servers need to configure the plugin from Lua rather than the process
+environment.\
+Once a realm is up, a global `crashcapture` table is available:
+
+```lua
+crashcapture.set("timeout", 30) -- seconds before a freeze is declared
+crashcapture.set("hang_kill", 15) -- force-close 15s after a freeze report
+crashcapture.set("loopbreak", false)
+print(crashcapture.get("timeout")) -- 30
+crashcapture.pulse() -- manual heartbeat
+```
+
+> Do note that plugin-mode doesn't initialize the lua counterparts early, this is being worked on.
+
+Keys mirror the settings above, lower-cased and without the `CRASHCAPTURE_`
+prefix: `timeout`, `hang_kill`, `max_age_days`, `loopbreak`, `firstchance`,
+`window_watchdog`, `lua_heartbeat`, `symbols`, `dir`, `script`, and `disable`.
+
+- Raising `timeout` from `0` starts the watchdog, enabling `lua_heartbeat`
+  installs the heartbeat timer; `set("disable", true)` disarms the plugin and
+  `false` re-arms it.
+- `max_age_days`, `dir`, and `script` only matter at the next startup / next
+  crash respectively, so set them early.
+
 ## Live memory diagnostics (`CRASHCAPTURE_SCRIPT`)
 
 Point `CRASHCAPTURE_SCRIPT` at a `.lua` file and it runs on every crash/hang in a **brand-new, throwaway LuaJIT state**, never the game's, which is unreliable mid-crash.\
