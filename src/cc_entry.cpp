@@ -33,6 +33,7 @@ CC_EXPORT int gmod13_open(GarrysMod::lua_State* L)
 CC_EXPORT int gmod13_close(GarrysMod::lua_State* L)
 {
     if (L && L->luabase) CrashCapture::Lua_OnShutdown(L->luabase);
+    if (!CrashCapture::Lua_HasBoundRealms()) CrashCapture::Shutdown();
     return 0;
 }
 

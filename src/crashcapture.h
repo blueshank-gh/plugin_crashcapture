@@ -110,6 +110,7 @@ namespace CrashCapture {
     // --------- cc-lua ---
     void Lua_OnInit(void* iface);
     void Lua_OnShutdown(void* iface);
+    bool Lua_HasBoundRealms();
     void Lua_RefreshStates();
     void Lua_Dump();
     bool Lua_BreakLoop(const char* msg);

@@ -26,8 +26,11 @@ namespace LuaState = GarrysMod::Lua::State;
 
 namespace CrashCapture {
     typedef void* (*CreateInterfaceFn)(const char* name, int* returncode);
-    static ILuaShared*    g_shared = NULL;
+    static ILuaShared* g_shared = NULL;
     static ILuaInterface* g_realm[3] = { NULL, NULL, NULL }; // CLIENT, SERVER, MENU
+    static bool g_apiInstalled[3] = { false, false, false }; // crashcapture table installed
+    static bool g_hbInstalled[3] = { false, false, false }; // heartbeat timer/hook installed
+    static void* g_apiState[3] = { NULL, NULL, NULL }; // lua_State each was installed on
 
     // lua_Debug must match LuaJIT's layout byte-for-byte
     // this better not change... ever...
@@ -209,7 +212,18 @@ namespace CrashCapture {
     void Lua_OnShutdown(void* iface)
     {
         for (int i = 0; i < 3; ++i)
-            if (g_realm[i] == iface) g_realm[i] = NULL;
+            if (g_realm[i] == iface) {
+                g_realm[i] = NULL;
+                g_apiState[i] = NULL;
+                g_apiInstalled[i] = false;
+                g_hbInstalled[i] = false;
+            }
+    }
+
+    bool Lua_HasBoundRealms()
+    {
+        for (int i = 0; i < 3; ++i) if (g_realm[i]) return true;
+        return false;
     }
 
     static CreateInterfaceFn ResolveLuaSharedFactory()
@@ -481,8 +495,6 @@ namespace CrashCapture {
         return 0;
     }
 
-    static bool g_hbInstalled[3] = { false, false, false };
-
     void Lua_InstallHeartbeat(void* iface)
     {
         if (!Cfg().lua_heartbeat) return;
@@ -620,9 +632,6 @@ namespace CrashCapture {
         }
         return 1;
     }
-
-    static bool g_apiInstalled[3] = { false, false, false };
-    static void* g_apiState[3] = { NULL, NULL, NULL };
 
     void Lua_InstallApi(void* iface)
     {
