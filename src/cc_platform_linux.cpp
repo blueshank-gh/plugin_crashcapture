@@ -378,6 +378,23 @@ namespace CrashCapture {
         _Unwind_Backtrace(BtCb, &s);
     }
 
+    struct BtArr { uintptr_t* out; int n; int max; };
+    static _Unwind_Reason_Code BtArrCb(struct _Unwind_Context* ctx, void* arg)
+    {
+        BtArr* s = (BtArr*)arg;
+        uintptr_t pc = (uintptr_t)_Unwind_GetIP(ctx);
+        if (pc && s->n < s->max) s->out[s->n++] = pc;
+        return (s->n >= s->max || s->n > 96) ? _URC_END_OF_STACK : _URC_NO_REASON;
+    }
+
+    int Platform_Backtrace(void* /*vctx*/, uintptr_t* out, int max)
+    {
+        if (!out || max <= 0) return 0;
+        BtArr s = { out, 0, max };
+        _Unwind_Backtrace(BtArrCb, &s);
+        return s.n;
+    }
+
     // --------- linux-section-adapters ---
 
     static void* g_curCtx = NULL;

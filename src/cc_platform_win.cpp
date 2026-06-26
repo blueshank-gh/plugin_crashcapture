@@ -166,6 +166,48 @@ namespace CrashCapture {
         #endif
     }
 
+    int Platform_Backtrace(void* vctx, uintptr_t* out, int max)
+    {
+        if (!out || max <= 0) return 0;
+        CONTEXT local;
+        CONTEXT* base = (CONTEXT*)vctx;
+        if (!base) { RtlCaptureContext(&local); base = &local; }
+        int n = 0;
+        #if defined(CC_X64)
+            CONTEXT c = *base;
+            while (n < max && n < 64) {
+                out[n++] = (uintptr_t)c.Rip;
+                DWORD64 imageBase = 0;
+                PRUNTIME_FUNCTION rf = NULL;
+                if (c.Rip && Mem_IsExecutable((uintptr_t)c.Rip))
+                    rf = RtlLookupFunctionEntry(c.Rip, &imageBase, NULL);
+                if (rf) {
+                    PVOID handlerData = NULL; DWORD64 establisher = 0;
+                    RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, c.Rip, rf, &c,
+                                     &handlerData, &establisher, NULL);
+                    if (c.Rip == 0) break;
+                } else {
+                    if (!Mem_IsReadable((void*)c.Rsp, sizeof(DWORD64))) break;
+                    c.Rip = *(DWORD64*)c.Rsp;
+                    c.Rsp += sizeof(DWORD64);
+                }
+            }
+        #else
+            out[n++] = (uintptr_t)base->Eip;
+            uintptr_t ebp = base->Ebp;
+            while (n < max && n < 64) {
+                if (!Mem_IsReadable((void*)ebp, 2 * sizeof(uintptr_t))) break;
+                uintptr_t ret     = ((uintptr_t*)ebp)[1];
+                uintptr_t nextEbp = ((uintptr_t*)ebp)[0];
+                if (!ret) break;
+                out[n++] = ret;
+                if (nextEbp <= ebp) break;
+                ebp = nextEbp;
+            }
+        #endif
+        return n;
+    }
+
     // --------- windows-section-adapters ---
 
     static void* g_curCtx = NULL;

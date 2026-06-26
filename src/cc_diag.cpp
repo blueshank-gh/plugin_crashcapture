@@ -344,7 +344,109 @@ namespace CrashCapture {
         return 1;
     }
 
-    // print() redirected into the .md report.
+    // pointer chain walk
+    static int mem_chain(lua_State* L)
+    {
+        int top = A.gettop(L);
+        if (top < 1) { A.pushnil(L); return 1; }
+        uintptr_t a = ArgAddr(L, 1);
+        for (int i = 2; i <= top; ++i) {
+            a += (uintptr_t)(long long)A.tonumber(L, i);
+            if (i < top) { // intermediate hop: follow the pointer stored here
+                if (!a || !Mem_IsReadable((void*)a, sizeof(void*))) { A.pushnil(L); return 1; }
+                void* p; memcpy(&p, (void*)a, sizeof(void*));
+                a = (uintptr_t)p;
+            }
+        }
+        A.pushlightuserdata(L, (void*)a);
+        return 1;
+    }
+
+    static int mem_bytes(lua_State* L)
+    {
+        uintptr_t a = ArgAddr(L, 1);
+        int want = A.type(L, 2) == LUA_TNUM ? (int)A.tonumber(L, 2) : 64;
+        if (want < 0) want = 0;
+        if (want > 4096) want = 4096;
+        static char buf[4096];
+        int n = 0;
+        for (; n < want; ++n) {
+            if (!Mem_IsReadable((void*)(a + n), 1)) break;
+            buf[n] = *(char*)(a + n);
+        }
+        A.pushlstring(L, buf, (size_t)n);
+        return 1;
+    }
+
+    static int NeedleSize(const char* ty)
+    {
+        if (!ty || !strcmp(ty, "ptr")) return (int)sizeof(void*);
+        if (!strcmp(ty, "int8")  || !strcmp(ty, "uint8"))  return 1;
+        if (!strcmp(ty, "int16") || !strcmp(ty, "uint16")) return 2;
+        if (!strcmp(ty, "int32") || !strcmp(ty, "uint32") || !strcmp(ty, "float"))  return 4;
+        if (!strcmp(ty, "int64") || !strcmp(ty, "uint64") || !strcmp(ty, "double")) return 8;
+        return 0;
+    }
+
+    static int BuildNeedle(lua_State* L, int valIdx, const char* ty, unsigned char* out)
+    {
+        int sz = NeedleSize(ty);
+        if (sz <= 0) return 0;
+        if (ty && !strcmp(ty, "float"))  { float f = (float)A.tonumber(L, valIdx); memcpy(out, &f, 4); return 4; }
+        if (ty && !strcmp(ty, "double")) { double d = A.tonumber(L, valIdx);       memcpy(out, &d, 8); return 8; }
+        uint64_t v = (uint64_t)ArgAddr(L, valIdx);
+        memcpy(out, &v, sz);
+        return sz;
+    }
+
+    static void ScanModuleForBytes(lua_State* L, const CCModule* m, const unsigned char* needle, int nlen, int* count, int cap)
+    {
+        uintptr_t base = m->base, end = m->base + m->size;
+        bool pageOk = false;
+        for (uintptr_t a = base; a + nlen <= end && *count < cap; ++a) {
+            if ((a & 0xFFF) == 0 || a == base) {
+                pageOk = Mem_IsReadable((void*)a, 1);
+                if (!pageOk) { a = (a & ~(uintptr_t)0xFFF) + 0x1000 - 1; continue; }
+            }
+            if (((a + nlen - 1) & ~(uintptr_t)0xFFF) != (a & ~(uintptr_t)0xFFF) &&
+                !Mem_IsReadable((void*)a, nlen)) continue; // straddles into an unreadable page
+            if (memcmp((void*)a, needle, nlen) == 0) {
+                A.pushlightuserdata(L, (void*)a);
+                A.rawseti(L, -2, ++(*count));
+            }
+        }
+    }
+
+    static int mem_search(lua_State* L)
+    {
+        const char* mod = A.type(L, 1) == LUA_TSTR ? A.tolstring(L, 1, NULL) : NULL;
+        const CCModule* m = mod ? Modules_FindByName(mod) : NULL;
+        if (!m) { A.pushnil(L); return 1; }
+        const char* ty = A.type(L, 3) == LUA_TSTR ? A.tolstring(L, 3, NULL) : "ptr";
+        unsigned char needle[8];
+        int nlen = BuildNeedle(L, 2, ty, needle);
+        if (!nlen) { A.pushnil(L); return 1; }
+        A.createtable(L, 0, 0);
+        int count = 0;
+        ScanModuleForBytes(L, m, needle, nlen, &count, 256);
+        return 1;
+    }
+
+    static int mem_refs(lua_State* L)
+    {
+        uintptr_t target = ArgAddr(L, 1);
+        if (!target) { A.pushnil(L); return 1; }
+        unsigned char needle[sizeof(void*)];
+        memcpy(needle, &target, sizeof(void*));
+        A.createtable(L, 0, 0);
+        int count = 0;
+        const CCModule* mods = NULL;
+        int c = Modules_Snapshot(&mods);
+        for (int i = 0; i < c && count < 256; ++i)
+            ScanModuleForBytes(L, &mods[i], needle, (int)sizeof(void*), &count, 256);
+        return 1;
+    }
+
     static int diag_print(lua_State* L)
     {
         int top = A.gettop(L);
@@ -375,17 +477,21 @@ namespace CrashCapture {
     static void Register(lua_State* L, void* nativeCtx)
     {
         // mem.*
-        A.createtable(L, 0, 15);
+        A.createtable(L, 0, 18);
         SetFn(L, "read", mem_read);
         SetFn(L, "string", mem_string);
+        SetFn(L, "bytes", mem_bytes);
         SetFn(L, "sym", mem_sym);
         SetFn(L, "deref", mem_deref);
         SetFn(L, "offset", mem_offset);
+        SetFn(L, "chain", mem_chain);
         SetFn(L, "readable", mem_readable);
         SetFn(L, "executable", mem_executable);
         SetFn(L, "find", mem_find);
         SetFn(L, "modules", mem_modules);
         SetFn(L, "scan", mem_scan);
+        SetFn(L, "search", mem_search);
+        SetFn(L, "refs", mem_refs);
         SetFn(L, "region", mem_region);
         SetFn(L, "dump", mem_dump);
         SetFn(L, "symbol", mem_symbol);
@@ -395,7 +501,7 @@ namespace CrashCapture {
         A.pushcclosure(L, diag_print, 0);
         A.setfield(L, LUA_GLOBALSINDEX, "print");
 
-        A.createtable(L, 0, 9);
+        A.createtable(L, 0, 10);
         A.pushstring(L, Report_Kind());
         A.setfield(L, -2, "kind");
         A.pushstring(L, Report_Reason());
@@ -457,6 +563,22 @@ namespace CrashCapture {
         A.setfield(L, -2, "pc");
         A.pushlightuserdata(L, (void*)sp);
         A.setfield(L, -2, "sp");
+
+        {
+            static uintptr_t pcs[64];
+            int nf = Platform_Backtrace(nativeCtx, pcs, 64);
+            A.createtable(L, nf, 0);
+            for (int i = 0; i < nf; ++i) {
+                A.createtable(L, 0, 2);
+                A.pushlightuserdata(L, (void*)pcs[i]);
+                A.setfield(L, -2, "pc");
+                char s[400]; FormatAddress(pcs[i], s, sizeof(s));
+                A.pushstring(L, s);
+                A.setfield(L, -2, "sym");
+                A.rawseti(L, -2, i + 1);
+            }
+            A.setfield(L, -2, "stack");
+        }
 
         {
             static CCLuaTrace traces[3];

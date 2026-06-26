@@ -144,6 +144,7 @@ namespace CrashCapture {
     void Platform_Install();
     void Platform_Uninstall();
     void Platform_DumpThread(const char* kind, const char* reason);
+    int Platform_Backtrace(void* ctx, uintptr_t* out, int max);
 
     typedef void (*SectionFn)(void* arg);
     bool RunProtected(SectionFn fn, void* arg);
