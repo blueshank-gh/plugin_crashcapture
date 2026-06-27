@@ -4,6 +4,8 @@ A crash and freeze logger for Garry's Mod servers.\
 Thanks to **Buildstruct** for infrastructure testing.\
 Based on https://github.com/Python1320/gmsv_segfault
 
+> Warning: do not share crash captures to others unless you have sanitized them, they can contain private/sensitive information about your server!
+
 ## What it does
 
 When your server crashes or freezes, you normally get nothing useful... the process just dies.\
