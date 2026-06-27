@@ -49,6 +49,8 @@ namespace CrashCapture {
         int         i_ci;
     };
 
+    typedef void (*cc_lua_Hook)(lua_State*, cc_lua_Debug*);
+    #define CC_LUA_MASKCOUNT (1 << 3)
     enum {
         CC_LT_NIL = 0, CC_LT_BOOL = 1, CC_LT_LIGHTUD = 2, CC_LT_NUM = 3,
         CC_LT_STR = 4, CC_LT_TAB = 5, CC_LT_FUNC = 6, CC_LT_UD = 7, CC_LT_THREAD = 8
@@ -71,8 +73,11 @@ namespace CrashCapture {
         void        (*pushnumber)(lua_State*, double);
         void        (*pushboolean)(lua_State*, int);
         void        (*pushstring)(lua_State*, const char*);
+        int         (*sethook)(lua_State*, cc_lua_Hook, int, int);
+        int         (*error)(lua_State*);
         bool        ok; // stack-walk API resolved
         bool        push_ok; // push API resolved
+        bool        hook_ok; // loop-break resolved
     };
 
     static const char* kGmodTypeName[] = {
@@ -183,6 +188,11 @@ namespace CrashCapture {
         g_api.pushboolean = (void(*)(lua_State*, int)) Lua_Sym(m, "lua_pushboolean");
         g_api.pushstring = (void(*)(lua_State*, const char*)) Lua_Sym(m, "lua_pushstring");
         g_api.push_ok = g_api.pushnil && g_api.pushnumber && g_api.pushboolean && g_api.pushstring;
+
+        // loop-break: set a count hook that raises an error out of the running VM.
+        g_api.sethook = (int(*)(lua_State*, cc_lua_Hook, int, int)) Lua_Sym(m, "lua_sethook");
+        g_api.error = (int(*)(lua_State*)) Lua_Sym(m, "lua_error");
+        g_api.hook_ok = g_api.sethook && g_api.error && g_api.pushstring;
     }
 
     static const char* RealmName(int r)
@@ -479,12 +489,54 @@ namespace CrashCapture {
         return rc;
     }
 
-    // JIT-compiled traces ignore the interpreter debug hook, this will change for GMNGC probably
-    bool Lua_BreakLoop(const char* /*msg*/)
+    static const char* g_breakMsg = "CrashCapture watchdog: interrupting a suspected infinite loop";
+    static void cc_break_hook(lua_State* L, cc_lua_Debug* /*ar*/)
     {
-        Log::Str("[CrashCapture] loop-break not performed "
-                "(JIT traces ignore debug hooks); see hang report for the location.\n");
-        return false;
+        if (g_api.sethook) g_api.sethook(L, NULL, 0, 0);
+        if (g_api.pushstring) g_api.pushstring(L, g_breakMsg);
+        if (g_api.error) g_api.error(L);
+    }
+
+    int Lua_ArmBreakHook()
+    {
+        if (!g_api.hook_ok) return 0;
+        int armed = 0;
+        for (int r = 0; r < 3; ++r) {
+            ILuaInterface* l = g_realm[r];
+            if (!l || !Mem_IsReadable(l, 2 * sizeof(void*))) continue;
+            lua_State* L = l->GetState();
+            if (!L || !Mem_IsReadable(L, sizeof(void*))) continue;
+            g_api.sethook(L, cc_break_hook, CC_LUA_MASKCOUNT, 1);
+            ++armed;
+        }
+        return armed;
+    }
+
+    bool Lua_BreakLoop(const char* msg)
+    {
+        Lua_RefreshStates();
+        if (msg && *msg) g_breakMsg = msg;
+        if (!g_api.hook_ok) {
+            Log::Str("[CrashCapture] loop-break unavailable (lua_sethook/lua_error not resolved from lua_shared).\n");
+            return false;
+        }
+
+        int routed = Platform_RequestLuaBreak();
+        if (routed >= 0) {
+            if (routed)
+                Log::F("[CrashCapture] loop-break: armed count hook on %d realm(s) on the game thread.\n", routed);
+            else
+                Log::Str("[CrashCapture] loop-break: game thread had no readable Lua realms.\n");
+            return routed > 0;
+        }
+
+        // fallback if request break doesn't work...
+        int armed = Lua_ArmBreakHook();
+        if (armed)
+            Log::F("[CrashCapture] loop-break: armed count hook on %d realm(s).\n", armed);
+        else
+            Log::Str("[CrashCapture] loop-break: no readable Lua realms to hook.\n");
+        return armed > 0;
     }
 
     // --------- lua-heartbeat ---
@@ -545,6 +597,7 @@ namespace CrashCapture {
         t[n++] = {"hang_kill", CK_INT, &c.hang_kill_sec, 0};
         t[n++] = {"max_age_days", CK_INT, &c.max_age_days, 0};
         t[n++] = {"loopbreak", CK_BOOL, &c.loopbreak, 0};
+        t[n++] = {"phys_resume", CK_BOOL, &c.phys_resume, 0};
         t[n++] = {"firstchance", CK_BOOL, &c.firstchance, 0};
         t[n++] = {"window_watchdog", CK_BOOL, &c.window_watchdog, 0};
         t[n++] = {"lua_heartbeat", CK_BOOL, &c.lua_heartbeat, 0};

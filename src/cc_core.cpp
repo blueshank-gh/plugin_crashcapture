@@ -75,7 +75,8 @@ namespace CrashCapture {
         c.hang_kill_sec = EnvInt("CRASHCAPTURE_HANG_KILL", 0);
         c.max_age_days = EnvInt("CRASHCAPTURE_MAX_AGE_DAYS", 14);
         c.loopbreak = EnvInt("CRASHCAPTURE_LOOPBREAK", 1) != 0;
-        
+        c.phys_resume = EnvInt("CRASHCAPTURE_PHYS_RESUME", 1) != 0;
+
         // First-chance VEH off on the client: the D3D/ShaderAPI bring-up uses SEH as control flow and intercepting it can break startup.
         #ifdef INTERFACE_PLUGIN
             c.firstchance = EnvInt("CRASHCAPTURE_FIRSTCHANCE", 1) != 0;
@@ -297,6 +298,51 @@ namespace CrashCapture {
     {
         Log::F("\n---\n\n_END OF REPORT (%s)_\n\n", Log::Path());
         Log::Flush();
+    }
+
+    volatile int g_lastStallClass = STALL_UNKNOWN;
+
+    struct PhysScan { void* ctx; const CCModule* pcMod; bool hit; };
+    static void PhysScanFn(void* p)
+    {
+        PhysScan* s = (PhysScan*)p;
+        if (s->pcMod && strstr(s->pcMod->name, "vphysics")) { s->hit = true; return; }
+
+        uintptr_t pcs[48];
+        int n = Platform_Backtrace(s->ctx, pcs, 48);
+        for (int i = 0; i < n; ++i) {
+            const CCModule* fm = Modules_Find(pcs[i]);
+            if (fm && strstr(fm->name, "vphysics")) { s->hit = true; return; }
+            char sym[256];
+            if (Sym_Resolve(pcs[i], sym, sizeof(sym)) &&
+                (strstr(sym, "PhysFrame") || strstr(sym, "CPhysicsHook") ||
+                 strstr(sym, "PhysicsSimulate"))) { s->hit = true; return; }
+        }
+    }
+
+    int Report_ClassifyStall(void* ctx, char* out, size_t outsz)
+    {
+        uintptr_t pc = Platform_ContextPC(ctx);
+        if (!pc) { snprintf(out, outsz, "unknown (no thread context)"); return STALL_UNKNOWN; }
+
+        const CCModule* m = Modules_Find(pc);
+        if (m && strstr(m->name, "lua_shared")) {
+            snprintf(out, outsz, "lua (interpreter)");
+            return STALL_LUA_INTERP;
+        }
+        if ((!m || strcmp(m->name, "[anon-exec]") == 0) && Mem_IsExecutable(pc)) {
+            snprintf(out, outsz, "lua (JIT trace / mcode)");
+            return STALL_LUA_JIT;
+        }
+        if (m) {
+            PhysScan ps = { ctx, m, false };
+            RunProtectedQuiet(PhysScanFn, &ps);
+            if (ps.hit) { snprintf(out, outsz, "physics (%s)", m->name); return STALL_PHYSICS; }
+            snprintf(out, outsz, "native (%s)", m->name);
+            return STALL_NATIVE;
+        }
+        snprintf(out, outsz, "unknown (pc 0x%llx unmapped)", (unsigned long long)pc);
+        return STALL_UNKNOWN;
     }
 
     void Report_Section(const char* title, SectionFn fn, void* arg, bool fenced)

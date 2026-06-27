@@ -312,6 +312,7 @@ namespace CrashCapture {
             g_lastPc = pc;
             g_lastMs = now;
         }
+        // TODO: windows needs phyysics-fault resume but this is a low priority.
         InterlockedExchange(&g_inReport, 0);
         return EXCEPTION_CONTINUE_SEARCH; // let WER / the runtime finish the crash
     }
@@ -339,8 +340,27 @@ namespace CrashCapture {
 
         Modules_Refresh();
         Log::Open(kind);
-        Report_SetContext(kind, reason, 0);
-        Report_Header(kind, reason);
+
+        const char* dispKind = kind;
+        char dk[96];
+        {
+            char stall[128] = "unknown (no thread context)";
+            int sc = STALL_UNKNOWN;
+            HANDLE th0 = (HANDLE)g_gameThreadHandle;
+            if (th0 && g_gameThreadId != GetCurrentThreadId()) {
+                SuspendThread(th0);
+                CONTEXT cc; memset(&cc, 0, sizeof(cc));
+                cc.ContextFlags = CONTEXT_FULL;
+                if (GetThreadContext(th0, &cc)) sc = Report_ClassifyStall(&cc, stall, sizeof(stall));
+                ResumeThread(th0);
+            }
+            g_lastStallClass = sc;
+            snprintf(dk, sizeof(dk), "%s - %s", kind, stall);
+            dispKind = dk;
+        }
+
+        Report_SetContext(dispKind, reason, 0);
+        Report_Header(dispKind, reason);
 
         HANDLE th = (HANDLE)g_gameThreadHandle;
         if (th && g_gameThreadId != GetCurrentThreadId()) {
@@ -372,6 +392,20 @@ namespace CrashCapture {
         Report_Footer();
         Log::Close();
         InterlockedExchange(&g_inReport, 0);
+    }
+
+    // TODO: QueueUserAPC onto the game thread?
+    int Platform_RequestLuaBreak() { return -1; }
+
+    uintptr_t Platform_ContextPC(void* vctx)
+    {
+        if (!vctx) return 0;
+        CONTEXT* c = (CONTEXT*)vctx;
+        #if defined(CC_X64)
+            return (uintptr_t)c->Rip;
+        #else
+            return (uintptr_t)c->Eip;
+        #endif
     }
 
     // --------- windows-symbols (dbghelp) ---

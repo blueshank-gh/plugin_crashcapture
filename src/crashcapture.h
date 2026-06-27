@@ -42,6 +42,7 @@ namespace CrashCapture {
         int hang_kill_sec;    // CRASHCAPTURE_HANG_KILL
         int max_age_days;     // CRASHCAPTURE_MAX_AGE_DAYS
         bool loopbreak;       // CRASHCAPTURE_LOOPBREAK
+        bool phys_resume;     // CRASHCAPTURE_PHYS_RESUME (Linux only, sad)
         bool firstchance;     // CRASHCAPTURE_FIRSTCHANCE
         bool window_watchdog; // CRASHCAPTURE_WINDOW_WATCHDOG
         bool lua_heartbeat;   // CRASHCAPTURE_LUA_HEARTBEAT
@@ -114,6 +115,7 @@ namespace CrashCapture {
     void Lua_RefreshStates();
     void Lua_Dump();
     bool Lua_BreakLoop(const char* msg);
+    int  Lua_ArmBreakHook();
     void Lua_InstallHeartbeat(void* iface);
     void Lua_InstallHeartbeatAll();
     void Lua_InstallApi(void* iface);
@@ -145,6 +147,13 @@ namespace CrashCapture {
     void Platform_Uninstall();
     void Platform_DumpThread(const char* kind, const char* reason);
     int Platform_Backtrace(void* ctx, uintptr_t* out, int max);
+    uintptr_t Platform_ContextPC(void* ctx);
+
+    // there are different kinds of classified stalls/hangs now.
+    enum StallClass { STALL_UNKNOWN = 0, STALL_NATIVE, STALL_PHYSICS, STALL_LUA_INTERP, STALL_LUA_JIT };
+    extern volatile int g_lastStallClass;
+    int Report_ClassifyStall(void* ctx, char* out, size_t outsz);
+    int Platform_RequestLuaBreak();
 
     typedef void (*SectionFn)(void* arg);
     bool RunProtected(SectionFn fn, void* arg);

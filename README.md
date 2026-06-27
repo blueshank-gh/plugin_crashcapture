@@ -43,7 +43,8 @@ The defaults are sensible, so you only need these if you want to change somethin
 |---|---|---|
 | `CRASHCAPTURE_TIMEOUT` | `10` | How many seconds the server can be unresponsive before it's treated as frozen. `0` turns freeze detection off. |
 | `CRASHCAPTURE_HANG_KILL` | `0` | After a freeze report, force-close the process this many seconds later. `0` means never. |
-| `CRASHCAPTURE_LOOPBREAK` | `1` | Try to break out of a stuck Lua loop on a freeze (currently best-effort, the report still pinpoints the loop). |
+| `CRASHCAPTURE_LOOPBREAK` | `1` | On a freeze, if the stalled thread is in Lua, arms a Lua debug hook on every realm that raises an error to break out of a stuck loop. |
+| `CRASHCAPTURE_PHYS_RESUME` | `1` | Linux only, when a fatal fault happens inside the physics tick (`PhysFrame`, under `Host_RunFrame`), pause physics and resume the game thread as if the physics call returned. |
 | `CRASHCAPTURE_WINDOW_WATCHDOG` | `1` | On Windows clients with no other heartbeat, detect a frozen game by watching its window. |
 | `CRASHCAPTURE_LUA_HEARTBEAT` | `1` | Use a lightweight in-game timer as the freeze heartbeat. |
 | `CRASHCAPTURE_FIRSTCHANCE` | auto | Windows: also catch certain early/internal errors. Auto-managed; usually leave alone. |
@@ -71,8 +72,7 @@ crashcapture.pulse() -- manual heartbeat
 > Do note that plugin-mode doesn't initialize the lua counterparts early, this is being worked on.
 
 Keys mirror the settings above, lower-cased and without the `CRASHCAPTURE_`
-prefix: `timeout`, `hang_kill`, `max_age_days`, `loopbreak`, `firstchance`,
-`window_watchdog`, `lua_heartbeat`, `symbols`, `dir`, `script`, and `disable`.
+prefix: `timeout`, `hang_kill`, `max_age_days`, `loopbreak`, `phys_resume`, `firstchance`, `window_watchdog`, `lua_heartbeat`, `symbols`, `dir`, `script`, and `disable`.
 
 - Raising `timeout` from `0` starts the watchdog, enabling `lua_heartbeat`
   installs the heartbeat timer; `set("disable", true)` disarms the plugin and
@@ -126,6 +126,10 @@ An `address` argument also accepts a plain number. Reads that fail return `nil`.
     `locals` is a `"a=1; self=Entity: 0x..."` summary, present only for Lua frames.\
     `nil` if no realm was readable or the LuaJIT API didn't resolve.
 
+- `crash.stack: table[]`\
+    The native call stack from the faulting context, as `{pc: address, sym: string}` entries (outermost frame first).\
+    On Linux the first few frames may be the report handler itself (it unwinds from there).
+
 **`mem` library**
 
 - `mem.read(addr: address, type: string): number`\
@@ -136,11 +140,20 @@ An `address` argument also accepts a plain number. Reads that fail return `nil`.
 - `mem.string(addr: address, max: number): string`\
     Reads a NUL-terminated string (up to `max` bytes, default 256).
 
+- `mem.bytes(addr: address, n: number): string`\
+    Up to `n` raw bytes (default 64, capped at 4096) as a Lua string, stopping at the first unreadable byte.\
+    For decoding structs with `string.byte` / `string.unpack`.
+
 - `mem.deref(addr: address): address`\
     Reads the pointer stored.
 
 - `mem.offset(addr: address, n: number): address`\
     Returns `addr + n`.
+
+- `mem.chain(start: address, ...: number): address`\
+    Walks a pointer chain.\
+    Each intermediate offset is "add then dereference"; the final offset is "add" only, so the result is the **address** of the last field (read it with `mem.read`/`mem.deref`).\
+    `nil` if any hop is unreadable. E.g. `mem.chain(crash.regs.rdi, 0x10, 0x28)` -> `*(rdi+0x10) + 0x28`.
 
 - `mem.sym(addr: address): string`\
     Returns `module+RVA` plus a symbol name when debug info is available.
@@ -153,6 +166,15 @@ An `address` argument also accepts a plain number. Reads that fail return `nil`.
 
 - `mem.scan(module: string, pattern: string): address`\
     IDA-style signature scan within `module` (e.g. `"48 8B ?? C3"`); `nil` if no match.
+
+- `mem.search(module: string, value: address|number, type: string): address[]`\
+    Addresses in `module` whose memory equals `value` interpreted as `type` (default `ptr`; same type names as `mem.read`).\
+    Returns a table of hits (possibly empty), capped at 256; `nil` on bad args.
+
+- `mem.refs(addr: address): address[]`\
+    Pointer-sized references to `addr` across all loaded modules - i.e. *what points here?*\
+    Returns a table of hits, capped at 256.\
+    Handy for tracking down a dangling/stale pointer.
 
 - `mem.region(addr: address): table`\
     Returns `{base, size, read, write, execute}` for the page containing `addr`.
@@ -184,4 +206,14 @@ print("fault at", mem.sym(crash.pc))
 local base, size = mem.find("server_srv")
 if base then print("server_srv", mem.sym(base), size) end
 print("dword at rip:", mem.read(crash.pc, "uint32"))
+
+-- native call stack
+for _, f in ipairs(crash.stack or {}) do print(f.sym) end
+
+-- what still references the faulting pointer?
+for _, a in ipairs(mem.refs(crash.fault) or {}) do print("referenced by", mem.sym(a)) end
+
+-- walk a struct: health at *(ent+0x10)+0x4
+local hp = mem.chain(crash.regs.rdi, 0x10, 0x4)
+if hp then print("hp =", mem.read(hp, "float")) end
 ```

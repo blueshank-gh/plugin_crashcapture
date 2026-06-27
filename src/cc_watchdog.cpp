@@ -78,9 +78,13 @@ namespace CrashCapture {
         snprintf(g_hangReportPath, sizeof(g_hangReportPath), "%s", Log::Path());
         g_hangPending = true;
 
+        // only worth arming the Lua loop-break when the stall is actually in Lua...
         if (Cfg().loopbreak) {
-            if (Lua_BreakLoop("CrashCapture watchdog: breaking suspected infinite loop"))
+            if (g_lastStallClass == STALL_NATIVE || g_lastStallClass == STALL_PHYSICS) {
+                Log::Str("[CrashCapture] hang: stall is not in Lua, loop-break skipped.\n");
+            } else if (Lua_BreakLoop("CrashCapture watchdog: breaking suspected infinite loop")) {
                 Log::Str("[CrashCapture] hang: requested Lua loop-break.\n");
+            }
         }
     }
 
