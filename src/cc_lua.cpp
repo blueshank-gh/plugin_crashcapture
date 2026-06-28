@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 
 #if defined(CC_WINDOWS)
     #define WIN32_LEAN_AND_MEAN
@@ -30,6 +31,8 @@ namespace CrashCapture {
     static ILuaInterface* g_realm[3] = { NULL, NULL, NULL }; // CLIENT, SERVER, MENU
     static bool g_apiInstalled[3] = { false, false, false }; // crashcapture table installed
     static bool g_hbInstalled[3] = { false, false, false }; // heartbeat timer/hook installed
+    static bool g_readyPending[3] = { false, false, false }; // crashcapture.ready hook owed to this realm
+    static bool g_readyFired[3] = { false, false, false }; // crashcapture.ready hook already fired for this realm
     static void* g_apiState[3] = { NULL, NULL, NULL }; // lua_State each was installed on
 
     // lua_Debug must match LuaJIT's layout byte-for-byte
@@ -227,6 +230,8 @@ namespace CrashCapture {
                 g_apiState[i] = NULL;
                 g_apiInstalled[i] = false;
                 g_hbInstalled[i] = false;
+                g_readyPending[i] = false;
+                g_readyFired[i] = false;
             }
     }
 
@@ -489,10 +494,167 @@ namespace CrashCapture {
         return rc;
     }
 
-    static const char* g_breakMsg = "CrashCapture watchdog: interrupting a suspected infinite loop";
+    // --------- recovery-hooks ---
+    
+    enum { CC_REC_STACK_MAX = 16 };
+    struct RecoveryInfo {
+        char method[16];
+        char stall[32];
+        char reason[176];
+        char report[768];
+        uint64_t downtime;
+        int  stackCount;
+        char stack[CC_REC_STACK_MAX][192];
+    };
+    static RecoveryInfo g_recInfo;
+    static volatile sig_atomic_t g_recLoopbreak = 0;
+    static volatile sig_atomic_t g_recPhysresume = 0;
+    static volatile sig_atomic_t g_recRecovery = 0;
+
+    static void RecStr(char* dst, size_t cap, const char* s) { snprintf(dst, cap, "%s", s ? s : ""); }
+
+    void Recovery_NotePhysResume(const char* stall, const char* report)
+    {
+        RecStr(g_recInfo.method, sizeof(g_recInfo.method), "physresume");
+        RecStr(g_recInfo.stall,  sizeof(g_recInfo.stall),  stall ? stall : "physics");
+        RecStr(g_recInfo.reason, sizeof(g_recInfo.reason), "");
+        RecStr(g_recInfo.report, sizeof(g_recInfo.report), report);
+        g_recInfo.downtime = 0;
+        g_recInfo.stackCount = 0;
+        g_recPhysresume = 1;
+        g_recRecovery = 1;
+    }
+
+    void Recovery_NoteRecovered(const char* method, uint64_t downtimeMs, const char* stall, const char* reason, const char* report)
+    {
+        RecStr(g_recInfo.method, sizeof(g_recInfo.method), method);
+        RecStr(g_recInfo.stall,  sizeof(g_recInfo.stall),  stall);
+        RecStr(g_recInfo.reason, sizeof(g_recInfo.reason), reason);
+        RecStr(g_recInfo.report, sizeof(g_recInfo.report), report);
+        g_recInfo.downtime = downtimeMs;
+        g_recInfo.stackCount = 0;
+        g_recRecovery = 1;
+    }
+
+    static void FireRecoveryHook(ILuaInterface* L, const char* event, const RecoveryInfo& info)
+    {
+        namespace G = GarrysMod::Lua;
+        L->PushSpecial(G::SPECIAL_GLOB);
+        L->GetField(-1, "hook");
+        if (!L->IsType(-1, G::Type::Table)) { L->Pop(2); return; }
+        L->GetField(-1, "Run");
+        if (!L->IsType(-1, G::Type::Function)) { L->Pop(3); return; }
+        L->PushString(event);
+
+        L->CreateTable();
+        if (info.method[0]) { L->PushString(info.method); L->SetField(-2, "method"); }
+        if (info.stall[0])  { L->PushString(info.stall); L->SetField(-2, "stall"); }
+        if (info.reason[0]) { L->PushString(info.reason); L->SetField(-2, "reason"); }
+        if (info.report[0]) { L->PushString(info.report); L->SetField(-2, "report"); }
+        if (info.downtime)  { L->PushNumber((double)info.downtime); L->SetField(-2, "downtime"); }
+        if (info.stackCount > 0) {
+            L->CreateTable();
+            for (int i = 0; i < info.stackCount; ++i) {
+                L->PushNumber((double)(i + 1));
+                L->PushString(info.stack[i]);
+                L->SetTable(-3);
+            }
+            L->SetField(-2, "stack");
+        }
+        if (L->PCall(2, 0, 0) != 0) L->Pop(1);
+        L->Pop(2);
+    }
+
+    void Lua_PollRecovery()
+    {
+        int lb = g_recLoopbreak, pr = g_recPhysresume, rc = g_recRecovery;
+        if (!lb && !pr && !rc) return;
+        g_recLoopbreak = g_recPhysresume = g_recRecovery = 0;
+
+        RecoveryInfo info = g_recInfo;
+        Lua_RefreshStates();
+        for (int r = 0; r < 3; ++r) {
+            ILuaInterface* l = g_realm[r];
+            if (!l || !Mem_IsReadable(l, 2 * sizeof(void*))) continue;
+            void* L = (void*)l->GetState();
+            if (!L || !Mem_IsReadable(L, sizeof(void*))) continue;
+            if (lb) FireRecoveryHook(l, "crashcapture.loopbreak", info);
+            if (pr) FireRecoveryHook(l, "crashcapture.physresume", info);
+            if (rc) FireRecoveryHook(l, "crashcapture.recovery", info);
+        }
+    }
+
+    // --------- lua-ready ---
+
+    static bool FireReadyHook(ILuaInterface* L, int r)
+    {
+        namespace G = GarrysMod::Lua;
+        L->PushSpecial(G::SPECIAL_GLOB);
+        L->GetField(-1, "hook");
+        if (!L->IsType(-1, G::Type::Table)) { L->Pop(2); return false; }
+        L->GetField(-1, "Run");
+        if (!L->IsType(-1, G::Type::Function)) { L->Pop(3); return false; }
+        L->PushString("crashcapture.ready");
+
+        L->CreateTable();
+        L->PushString(RealmName(r)); L->SetField(-2, "realm");
+        L->PushString(CC_SIDE); L->SetField(-2, "side");
+        L->PushString(CC_VERSION); L->SetField(-2, "version");
+        L->PushString(CC_OS); L->SetField(-2, "os");
+        L->PushString(CC_ARCH); L->SetField(-2, "arch");
+
+        if (L->PCall(2, 0, 0) != 0) L->Pop(1);
+        L->Pop(2);
+        return true;
+    }
+
+    void Lua_PollReady()
+    {
+        bool pending = false;
+        for (int r = 0; r < 3; ++r) if (g_readyPending[r]) { pending = true; break; }
+        if (!pending) return;
+
+        Lua_RefreshStates();
+        for (int r = 0; r < 3; ++r) {
+            if (!g_readyPending[r]) continue;
+            ILuaInterface* l = g_realm[r];
+            if (!l || !Mem_IsReadable(l, 2 * sizeof(void*))) continue;
+            void* L = (void*)l->GetState();
+            if (!L || !Mem_IsReadable(L, sizeof(void*))) continue;
+            if (FireReadyHook(l, r)) {
+                g_readyPending[r] = false;
+                g_readyFired[r] = true;
+            }
+        }
+    }
+
+    static void Lua_DisarmBreakHook()
+    {
+        if (!g_api.sethook) return;
+        for (int r = 0; r < 3; ++r) {
+            ILuaInterface* l = g_realm[r];
+            if (!l || !Mem_IsReadable(l, 2 * sizeof(void*))) continue;
+            lua_State* L = l->GetState();
+            if (!L || !Mem_IsReadable(L, sizeof(void*))) continue;
+            g_api.sethook(L, NULL, 0, 0);
+        }
+    }
+
+    static const char* g_breakMsg = "CrashCapture: interrupting a suspected infinite loop";
     static void cc_break_hook(lua_State* L, cc_lua_Debug* /*ar*/)
     {
+        if (!Mem_IsReadable(L, sizeof(void*))) { Lua_DisarmBreakHook(); return; }
         if (g_api.sethook) g_api.sethook(L, NULL, 0, 0);
+
+        RecStr(g_recInfo.method, sizeof(g_recInfo.method), "loopbreak");
+        RecStr(g_recInfo.stall,  sizeof(g_recInfo.stall),  StallClassName(g_lastStallClass));
+        RecStr(g_recInfo.reason, sizeof(g_recInfo.reason), "");
+        RecStr(g_recInfo.report, sizeof(g_recInfo.report), "");
+        g_recInfo.downtime = 0;
+        g_recInfo.stackCount = 0;
+        g_recLoopbreak = 1;
+
+        if (!Mem_IsReadable(L, sizeof(void*))) return;
         if (g_api.pushstring) g_api.pushstring(L, g_breakMsg);
         if (g_api.error) g_api.error(L);
     }
@@ -502,6 +664,7 @@ namespace CrashCapture {
         if (!g_api.hook_ok) return 0;
         int armed = 0;
         for (int r = 0; r < 3; ++r) {
+            if (r == LuaState::MENU) continue;
             ILuaInterface* l = g_realm[r];
             if (!l || !Mem_IsReadable(l, 2 * sizeof(void*))) continue;
             lua_State* L = l->GetState();
@@ -544,6 +707,8 @@ namespace CrashCapture {
     static int cc_lua_pulse(lua_State*)
     {
         Watchdog_Pulse();
+        Lua_PollRecovery();
+        Lua_PollReady();
         return 0;
     }
 
@@ -674,6 +839,16 @@ namespace CrashCapture {
 
         if (strcmp(key, "disable") == 0) { g_api.pushboolean(L, g_luaDisabled); return 1; }
 
+        if (strcmp(key, "ready") == 0) {
+            bool ready = false, matched = false;
+            for (int r = 0; r < 3; ++r)
+                if (g_apiState[r] && g_apiState[r] == (void*)L) { ready = g_readyFired[r]; matched = true; break; }
+            if (!matched)
+                for (int r = 0; r < 3; ++r) if (g_readyFired[r]) { ready = true; break; }
+            g_api.pushboolean(L, ready ? 1 : 0);
+            return 1;
+        }
+
         CfgEntry buf[16];
         const CfgEntry* e = FindCfg(key, buf);
         if (!e) { g_api.pushnil(L); return 1; }
@@ -684,6 +859,26 @@ namespace CrashCapture {
             case CK_STR: g_api.pushstring(L, (const char*)e->ptr); break;
         }
         return 1;
+    }
+
+    static int cc_lua_physpause(lua_State* L)
+    {
+        if (!g_api.ok || !g_api.push_ok) return 0;
+
+        int paused;
+        if (g_api.gettop(L) < 1 || g_api.type(L, 1) == CC_LT_NIL) {
+            int cur = Platform_PhysPaused();
+            paused = (cur == 1) ? 0 : 1;
+        } else {
+            paused = g_api.toboolean(L, 1) != 0;
+        }
+
+        int applied = Platform_SetPhysPaused(paused);
+        g_api.pushboolean(L, applied ? 1 : 0);
+
+        int state = Platform_PhysPaused();
+        if (state < 0) g_api.pushnil(L); else g_api.pushboolean(L, state);
+        return 2;
     }
 
     void Lua_InstallApi(void* iface)
@@ -707,10 +902,15 @@ namespace CrashCapture {
             L->PushCFunction(cc_lua_set); L->SetField(-2, "set");
             L->PushCFunction(cc_lua_get); L->SetField(-2, "get");
             L->PushCFunction(cc_lua_pulse); L->SetField(-2, "pulse");
+            L->PushCFunction(cc_lua_physpause); L->SetField(-2, "phys_pause");
         L->SetField(-2, "crashcapture");
         L->Pop();
 
-        if (r >= 0) g_apiInstalled[r] = true;
+        if (r >= 0) {
+            g_apiInstalled[r] = true;
+            g_apiState[r] = (void*)L->GetState();
+            if (!g_readyFired[r]) g_readyPending[r] = true;
+        }
     }
 
     bool Lua_EnsureApi()
@@ -726,6 +926,8 @@ namespace CrashCapture {
                 g_apiState[r] = NULL;
                 g_apiInstalled[r] = false;
                 g_hbInstalled[r] = false;
+                g_readyPending[r] = false;
+                g_readyFired[r] = false;
                 continue;
             }
 
@@ -735,6 +937,7 @@ namespace CrashCapture {
                 g_apiState[r] = st;
                 g_apiInstalled[r] = false;
                 g_hbInstalled[r] = false;
+                g_readyFired[r] = false;
                 Lua_InstallApi(l);
                 Lua_InstallHeartbeat(l);
             }

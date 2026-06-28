@@ -25,8 +25,27 @@ namespace CrashCapture {
     static PVOID    g_veh = NULL;
     static LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter = NULL;
     static volatile LONG g_inReport = 0;
-    static uintptr_t g_lastPc = 0;
-    static uint64_t  g_lastMs = 0;
+    static const int kRecentPc = 16;
+    static const uint64_t kDupWindowMs = 30000;
+    static const int kMaxFirstChanceReports = 12;
+    static uintptr_t g_recentPc[kRecentPc] = {0};
+    static uint64_t  g_recentMs[kRecentPc] = {0};
+    static int g_recentIdx = 0;
+    static int g_firstChanceReports = 0;
+
+    static bool SeenRecently(uintptr_t pc, uint64_t now)
+    {
+        if (!pc) return false;
+        for (int i = 0; i < kRecentPc; ++i)
+            if (g_recentPc[i] == pc && (now - g_recentMs[i]) < kDupWindowMs) return true;
+        return false;
+    }
+    static void RememberPc(uintptr_t pc, uint64_t now)
+    {
+        g_recentPc[g_recentIdx] = pc;
+        g_recentMs[g_recentIdx] = now;
+        g_recentIdx = (g_recentIdx + 1) % kRecentPc;
+    }
 
     // __try/__except can't share a frame with C++ unwinding, so this just calls through the pointer.
     bool RunProtectedQuiet(SectionFn fn, void* arg)
@@ -299,20 +318,30 @@ namespace CrashCapture {
         Log::Close();
     }
 
-    static LONG HandleException(const char* kind, EXCEPTION_POINTERS* ep)
+    static LONG HandleException(const char* kind, EXCEPTION_POINTERS* ep, bool firstChance)
     {
         if (InterlockedCompareExchange(&g_inReport, 1, 0) != 0)
             return EXCEPTION_CONTINUE_SEARCH;
 
         uintptr_t pc = ep && ep->ExceptionRecord ? (uintptr_t)ep->ExceptionRecord->ExceptionAddress : 0;
         uint64_t now = MonotonicMs();
-        bool dup = (pc && pc == g_lastPc && (now - g_lastMs) < 3000);
-        if (!dup) {
-            WriteCrashReport(kind, ep);
-            g_lastPc = pc;
-            g_lastMs = now;
+
+        bool write = true;
+        if (firstChance) {
+            if (g_firstChanceReports >= kMaxFirstChanceReports || SeenRecently(pc, now))
+                write = false;
         }
-        // TODO: windows needs phyysics-fault resume but this is a low priority.
+
+        if (write) {
+            WriteCrashReport(kind, ep);
+            RememberPc(pc, now);
+            if (firstChance && ++g_firstChanceReports == kMaxFirstChanceReports)
+                Log::Notice("[CrashCapture] first-chance report cap reached (%d); "
+                            "further first-chance exceptions are suppressed this session.\n",
+                            kMaxFirstChanceReports);
+        }
+        
+        // TODO: windows needs physics-fault resume but this is a low priority.
         InterlockedExchange(&g_inReport, 0);
         return EXCEPTION_CONTINUE_SEARCH; // let WER / the runtime finish the crash
     }
@@ -322,12 +351,12 @@ namespace CrashCapture {
         if (!Cfg().firstchance) return EXCEPTION_CONTINUE_SEARCH;
         if (!ep || !ep->ExceptionRecord) return EXCEPTION_CONTINUE_SEARCH;
         if (!IsFatalCode(ep->ExceptionRecord->ExceptionCode)) return EXCEPTION_CONTINUE_SEARCH;
-        return HandleException("first-chance fatal exception", ep);
+        return HandleException("first-chance fatal exception", ep, true);
     }
 
     static LONG WINAPI UnhandledFilter(EXCEPTION_POINTERS* ep)
     {
-        HandleException("unhandled exception", ep);
+        HandleException("unhandled exception", ep, false);
         if (g_prevFilter) return g_prevFilter(ep);
         return EXCEPTION_CONTINUE_SEARCH;
     }
@@ -394,8 +423,26 @@ namespace CrashCapture {
         InterlockedExchange(&g_inReport, 0);
     }
 
-    // TODO: QueueUserAPC onto the game thread?
-    int Platform_RequestLuaBreak() { return -1; }
+    int Platform_RequestLuaBreak()
+    {
+        if (g_gameThreadId == GetCurrentThreadId())
+            return -1;
+
+        HANDLE th = (HANDLE)g_gameThreadHandle;
+        if (!th) return 0;
+        if (SuspendThread(th) == (DWORD)-1) return 0;
+
+        CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
+        ctx.ContextFlags = CONTEXT_CONTROL;
+        GetThreadContext(th, &ctx);
+
+        int armed = Lua_ArmBreakHook();
+
+        ResumeThread(th);
+        return armed;
+    }
+    int Platform_SetPhysPaused(int) { return 0; }
+    int Platform_PhysPaused() { return -1; }
 
     uintptr_t Platform_ContextPC(void* vctx)
     {

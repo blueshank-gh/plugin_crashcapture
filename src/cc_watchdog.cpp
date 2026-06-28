@@ -29,6 +29,8 @@ namespace CrashCapture {
     static uint64_t g_hangStartMs = 0;
     static bool g_hangPending = false;
     static char g_hangReportPath[768] = {0};
+    static char g_hangReason[256] = {0};
+    static char g_hangMethod[16] = {0};
 
     #if defined(CC_WINDOWS)
         static HANDLE g_thread = NULL;
@@ -76,13 +78,16 @@ namespace CrashCapture {
         g_hangStartMs = now;
         Platform_DumpThread("hang", reason);
         snprintf(g_hangReportPath, sizeof(g_hangReportPath), "%s", Log::Path());
+        snprintf(g_hangReason, sizeof(g_hangReason), "%s", reason ? reason : "");
+        g_hangMethod[0] = 0;
         g_hangPending = true;
 
         // only worth arming the Lua loop-break when the stall is actually in Lua...
         if (Cfg().loopbreak) {
             if (g_lastStallClass == STALL_NATIVE || g_lastStallClass == STALL_PHYSICS) {
                 Log::Str("[CrashCapture] hang: stall is not in Lua, loop-break skipped.\n");
-            } else if (Lua_BreakLoop("CrashCapture watchdog: breaking suspected infinite loop")) {
+            } else if (Lua_BreakLoop("CrashCapture: breaking suspected infinite loop")) {
+                snprintf(g_hangMethod, sizeof(g_hangMethod), "loopbreak");
                 Log::Str("[CrashCapture] hang: requested Lua loop-break.\n");
             }
         }
@@ -100,6 +105,7 @@ namespace CrashCapture {
                  "report was written.",
                  (unsigned long long)dur);
         Log::AppendNote(g_hangReportPath, note);
+        Recovery_NoteRecovered(g_hangMethod, dur, StallClassName(g_lastStallClass), g_hangReason, g_hangReportPath);
     }
 
     // after a dump, optionally kill the process once the grace window passes

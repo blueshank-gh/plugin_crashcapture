@@ -235,6 +235,19 @@ namespace CrashCapture {
     void Pulse()
     {
         Watchdog_Pulse();
+        Lua_PollRecovery();
+        Lua_PollReady();
+    }
+
+    const char* StallClassName(int cls)
+    {
+        switch (cls) {
+            case STALL_PHYSICS:    return "physics";
+            case STALL_NATIVE:     return "native";
+            case STALL_LUA_INTERP: return "lua";
+            case STALL_LUA_JIT:    return "lua-jit";
+            default:               return "unknown";
+        }
     }
 
     void Grace(int seconds)

@@ -33,7 +33,7 @@
     #define CC_SIDE "client"
 #endif
 
-#define CC_VERSION "1.0"
+#define CC_VERSION "1.1"
 
 namespace CrashCapture {
     // --------- cc-config ---
@@ -123,6 +123,13 @@ namespace CrashCapture {
     void* Lua_SharedHandle();
     void* Lua_Sym(void* mod, const char* name);
 
+    // --------- cc-recovery ---
+    void Lua_PollRecovery();
+    void Lua_PollReady();
+    void Recovery_NotePhysResume(const char* stall, const char* report);
+    void Recovery_NoteRecovered(const char* method, uint64_t downtimeMs, const char* stall, const char* reason, const char* report);
+    const char* StallClassName(int cls);
+
     struct CCLuaFrame {
         int level;
         int currentline;
@@ -154,6 +161,8 @@ namespace CrashCapture {
     extern volatile int g_lastStallClass;
     int Report_ClassifyStall(void* ctx, char* out, size_t outsz);
     int Platform_RequestLuaBreak();
+    int Platform_SetPhysPaused(int paused);
+    int Platform_PhysPaused();
 
     typedef void (*SectionFn)(void* arg);
     bool RunProtected(SectionFn fn, void* arg);

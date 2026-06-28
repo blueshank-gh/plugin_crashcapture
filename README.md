@@ -71,16 +71,90 @@ print(crashcapture.get("timeout")) -- 30
 crashcapture.pulse() -- manual heartbeat
 ```
 
-> Do note that plugin-mode doesn't initialize the lua counterparts early, this is being worked on.
+> In plugin mode the Lua table appears a little after the realm comes up (it's
+> attached on the next game frame, not synchronously like `require`). Don't guess
+> when it's ready, listen for the `crashcapture.ready` hook or poll
+> `crashcapture.get("ready")` (see [Knowing when it's ready](#knowing-when-its-ready)).
 
 Keys mirror the settings above, lower-cased and without the `CRASHCAPTURE_`
 prefix: `timeout`, `hang_kill`, `max_age_days`, `loopbreak`, `phys_resume`, `firstchance`, `window_watchdog`, `lua_heartbeat`, `symbols`, `dir`, `script`, and `disable`.
+
+There's also a Linux-only diagnostic for the physics-resume feature:
+
+```lua
+local applied, state = crashcapture.phys_pause(true) -- pause physics
+print(applied, state) --> true   true
+crashcapture.phys_pause(false) -- resume
+```
 
 - Raising `timeout` from `0` starts the watchdog, enabling `lua_heartbeat`
   installs the heartbeat timer; `set("disable", true)` disarms the plugin and
   `false` re-arms it.
 - `max_age_days`, `dir`, and `script` only matter at the next startup / next
   crash respectively, so set them early.
+
+## Knowing when it's ready
+
+Loading as a binary module (`require`) installs the `crashcapture` table synchronously, so it's there the moment `require` returns.\
+In plugin mode it's attached a little later, on the first game frame after the realm comes up.\
+Rather than guessing or polling for the table, use either of these:
+
+**`crashcapture.ready` hook** - fired once per realm, on the game thread at a safe
+tick, as soon as the table is installed and usable:
+
+```lua
+hook.Add("crashcapture.ready", "configure_crashcapture", function(info)
+    print("[CrashCapture] ready in", info.realm) -- "server" / "client" / "menu"
+    crashcapture.set("timeout", 30)
+end)
+```
+
+The `info` table carries `realm`, `side` (`"server"`/`"client"`), `version`, `os`,
+and `arch`.
+
+**`crashcapture.get("ready")`** - a boolean for code that may load *after* the hook
+already fired (the hook is one-shot, so a late listener would miss it):
+
+```lua
+if crashcapture and crashcapture.get("ready") then
+    crashcapture.set("timeout", 30)
+end
+```
+
+## Recovery hooks
+
+Some freezes are recoverable, for example a stuck Lua loop can be broken (`loopbreak`).\
+When that happens, the plugin fires standard Garry's Mod hooks so your addons can react, for example notify staff, log to a database, or clean up the offending entity.
+
+The hooks run **on the game thread at the next safe tick**, so it's safe to do normal Lua work in them.
+
+| Hook | Fires when |
+|---|---|
+| `crashcapture.loopbreak` | A suspected infinite Lua loop was interrupted. |
+| `crashcapture.physresume` | A physics fault was resumed. |
+| `crashcapture.recovery` | Any time the game thread recovers from a freeze. |
+
+Each hook receives a single `info` table.\
+Fields are present only when known:
+
+- `info.method` - `"loopbreak"`, `"physresume"`, or `nil` (self-recovered).
+- `info.stall` - where the stall was: `"physics"`, `"native"`, `"lua"`, `"lua-jit"`.
+- `info.reason` - the one-line freeze reason (same text as the report).
+- `info.report` - path to the full report file.
+- `info.downtime` - milliseconds the game thread was stalled (recovery only).
+- `info.stack?` - array of `"source:line in name"` strings captured from the stuck Lua call stack.
+
+```lua
+hook.Add("crashcapture.recovery", "notify_staff", function(info)
+    print(("[CrashCapture] recovered via %s after %dms (%s)")
+        :format(info.method or "self", info.downtime or 0, info.stall or "?"))
+    if info.report then print("  report:", info.report) end
+end)
+
+hook.Add("crashcapture.loopbreak", "log_loop", function(info)
+    for _, frame in ipairs(info.stack or {}) do print("  ", frame) end
+end)
+```
 
 ## Live memory diagnostics (`CRASHCAPTURE_SCRIPT`)
 

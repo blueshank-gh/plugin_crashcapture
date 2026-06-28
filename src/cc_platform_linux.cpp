@@ -475,30 +475,48 @@ namespace CrashCapture {
     static unsigned g_physResumeCount = 0;
     static const unsigned kMaxPhysResume = 100; // bail to a real crash if it keeps re-faulting
 
-    // CPhysicsHook::m_bPaused offset, TODO: we need to get the x64 offset...
+    // CPhysicsHook::m_bPaused offset
     #if defined(CC_X86)
         #define CC_PHYS_PAUSED_OFFSET 88
+    #else
+        #define CC_PHYS_PAUSED_OFFSET 143 // TODO: unconfirmed
     #endif
 
     static void ResolvePhysics()
     {
+        // TODO: _Z17PhysicsGameSystemv is not visible on x64
         if (g_physGameSystem) return;
         g_physGameSystem = (tPhysicsGameSystem)Sym_Lookup("server", "_Z17PhysicsGameSystemv");
         if (!g_physGameSystem)
             g_physGameSystem = (tPhysicsGameSystem)Sym_Lookup(NULL, "_Z17PhysicsGameSystemv");
     }
 
-    static void SetPhysPaused(bool paused)
+    static bool* PhysPausedSlot()
     {
     #if defined(CC_PHYS_PAUSED_OFFSET)
-        if (!g_physGameSystem) return;
+        ResolvePhysics();
+        if (!g_physGameSystem) return NULL;
         void* hook = g_physGameSystem();
-        if (!hook) return;
+        if (!hook) return NULL;
         bool* m_bPaused = (bool*)((char*)hook + CC_PHYS_PAUSED_OFFSET);
-        if (Mem_IsReadable(m_bPaused, sizeof(bool))) *m_bPaused = paused;
+        return Mem_IsReadable(m_bPaused, sizeof(bool)) ? m_bPaused : NULL;
     #else
-        (void)paused; // x64 is offset unknown...
+        return NULL; // offset unknown for this arch
     #endif
+    }
+
+    int Platform_SetPhysPaused(int paused)
+    {
+        bool* slot = PhysPausedSlot();
+        if (!slot) return 0;
+        *slot = paused != 0;
+        return 1;
+    }
+
+    int Platform_PhysPaused()
+    {
+        bool* slot = PhysPausedSlot();
+        return slot ? (*slot ? 1 : 0) : -1;
     }
 
     // gmsv_physframe can hard-stop the physics system.
@@ -580,7 +598,7 @@ namespace CrashCapture {
         if (!t.have) return false;
 
         // physics off so the next tick doesn't re-fault on the same garbage.
-        SetPhysPaused(true);
+        Platform_SetPhysPaused(1);
         StopPhysicsDamnit();
 
         ucontext_t* uc = (ucontext_t*)ucontext;
@@ -600,6 +618,7 @@ namespace CrashCapture {
         ++g_physResumeCount;
         Log::F("[CrashCapture] physics fault recovered: resumed Host_RunFrame (resume #%u; physics paused).\n", g_physResumeCount);
         Log::Flush();
+        Recovery_NotePhysResume("physics", Log::Path());
         return true;
     }
 
