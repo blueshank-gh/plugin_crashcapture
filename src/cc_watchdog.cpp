@@ -287,6 +287,10 @@ namespace CrashCapture {
             if (timeout <= 0) continue;
 
             uint64_t now = MonotonicMs();
+
+            if (g_graceUntilMs && g_lastPulseMs && now - g_lastPulseMs < (uint64_t)timeout * 1000ull)
+                g_graceUntilMs = 0;
+
             if (now < g_graceUntilMs) continue; // inside a known stall (map change)
 
             if (g_lastPulseMs != 0) {
