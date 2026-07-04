@@ -86,6 +86,7 @@ namespace CrashCapture {
         
         c.window_watchdog = EnvInt("CRASHCAPTURE_WINDOW_WATCHDOG", 1) != 0;
         c.lua_heartbeat = EnvInt("CRASHCAPTURE_LUA_HEARTBEAT", 1) != 0;
+        c.manual_dump = EnvInt("CRASHCAPTURE_MANUAL_DUMP", 1) != 0;
         c.console = EnvInt("CRASHCAPTURE_CONSOLE", 0) != 0;
         c.symbols = EnvInt("CRASHCAPTURE_SYMBOLS", 1) != 0;
 

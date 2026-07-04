@@ -639,6 +639,46 @@ namespace CrashCapture {
         _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
     }
 
+    static HANDLE g_dumpEvent = NULL; // external SetEvent -> request a dump
+    static HANDLE g_dumpStop = NULL; // signalled at teardown to unblock the waiter
+    static HANDLE g_dumpWaiter = NULL;
+
+    static DWORD WINAPI DumpWaiterThread(LPVOID)
+    {
+        HANDLE h[2] = { g_dumpEvent, g_dumpStop };
+        for (;;) {
+            DWORD w = WaitForMultipleObjects(2, h, FALSE, INFINITE);
+            if (w != WAIT_OBJECT_0) break;
+            DumpNow("manual dump requested (event)");
+        }
+        return 0;
+    }
+
+    static void StartDumpWaiter()
+    {
+        if (g_dumpWaiter) return;
+        char name[64];
+        snprintf(name, sizeof(name), "Local\\CrashCapture_Dump_%lu",
+                 (unsigned long)GetCurrentProcessId());
+        g_dumpEvent = CreateEventA(NULL, FALSE, FALSE, name);
+        g_dumpStop = CreateEventA(NULL, FALSE, FALSE, NULL);
+        if (!g_dumpEvent || !g_dumpStop) return;
+        g_dumpWaiter = CreateThread(NULL, 0, DumpWaiterThread, NULL, 0, NULL);
+        if (g_dumpWaiter)
+            Log::F("[CrashCapture] manual dump armed: signal event \"%s\" to capture.\n", name);
+    }
+
+    static void StopDumpWaiter()
+    {
+        if (g_dumpWaiter) {
+            if (g_dumpStop) SetEvent(g_dumpStop);
+            WaitForSingleObject(g_dumpWaiter, 2000);
+            CloseHandle(g_dumpWaiter); g_dumpWaiter = NULL;
+        }
+        if (g_dumpStop) { CloseHandle(g_dumpStop); g_dumpStop = NULL; }
+        if (g_dumpEvent) { CloseHandle(g_dumpEvent); g_dumpEvent = NULL; }
+    }
+
     // ------------------------------------------------------------- install -----
     void Platform_Install()
     {
@@ -647,11 +687,13 @@ namespace CrashCapture {
         // make sure our last-chance filter is actually reached.
         SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
         InstallCrtHandlers();
+        if (Cfg().manual_dump) StartDumpWaiter();
         Sym_Init(); // enumerate modules now, in a safe (non-crash) context
     }
 
     void Platform_Uninstall()
     {
+        StopDumpWaiter();
         if (g_veh) { RemoveVectoredExceptionHandler(g_veh); g_veh = NULL; }
         SetUnhandledExceptionFilter(g_prevFilter);
         g_prevFilter = NULL;

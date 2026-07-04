@@ -46,6 +46,7 @@ namespace CrashCapture {
         bool firstchance;     // CRASHCAPTURE_FIRSTCHANCE
         bool window_watchdog; // CRASHCAPTURE_WINDOW_WATCHDOG
         bool lua_heartbeat;   // CRASHCAPTURE_LUA_HEARTBEAT
+        bool manual_dump;     // CRASHCAPTURE_MANUAL_DUMP (SIGUSR1 / named event)
         bool console;         // CRASHCAPTURE_CONSOLE
         bool symbols;         // CRASHCAPTURE_SYMBOLS
         char dir[512];        // CRASHCAPTURE_DIR

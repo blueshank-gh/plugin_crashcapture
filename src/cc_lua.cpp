@@ -766,6 +766,7 @@ namespace CrashCapture {
         t[n++] = {"firstchance", CK_BOOL, &c.firstchance, 0};
         t[n++] = {"window_watchdog", CK_BOOL, &c.window_watchdog, 0};
         t[n++] = {"lua_heartbeat", CK_BOOL, &c.lua_heartbeat, 0};
+        t[n++] = {"manual_dump", CK_BOOL, &c.manual_dump, 0};
         t[n++] = {"symbols", CK_BOOL, &c.symbols, 0};
         t[n++] = {"dir", CK_STR,  c.dir, sizeof(c.dir)};
         t[n++] = {"script", CK_STR,  c.script, sizeof(c.script)};

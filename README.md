@@ -49,6 +49,7 @@ The defaults are sensible, so you only need these if you want to change somethin
 | `CRASHCAPTURE_PHYS_RESUME` | `1` | Linux only, when a fatal fault happens inside the physics tick (`PhysFrame`, under `Host_RunFrame`), pause physics and resume the game thread as if the physics call returned. |
 | `CRASHCAPTURE_WINDOW_WATCHDOG` | `1` | On Windows clients with no other heartbeat, detect a frozen game by watching its window. |
 | `CRASHCAPTURE_LUA_HEARTBEAT` | `1` | Use a lightweight in-game timer as the freeze heartbeat. |
+| `CRASHCAPTURE_MANUAL_DUMP` | `1` | Let an external process force a report on demand. |
 | `CRASHCAPTURE_FIRSTCHANCE` | auto | Windows: also catch certain early/internal errors. Auto-managed; usually leave alone. |
 | `CRASHCAPTURE_CONSOLE` | `0` | Print the full report to the console too. Off by default, only a short notice and the file path are printed. |
 | `CRASHCAPTURE_SYMBOLS` | `1` | Add function names and source lines to reports when debug info is available. No effect when it isn't. |
@@ -77,7 +78,7 @@ crashcapture.pulse() -- manual heartbeat
 > `crashcapture.get("ready")` (see [Knowing when it's ready](#knowing-when-its-ready)).
 
 Keys mirror the settings above, lower-cased and without the `CRASHCAPTURE_`
-prefix: `timeout`, `hang_kill`, `max_age_days`, `loopbreak`, `phys_resume`, `firstchance`, `window_watchdog`, `lua_heartbeat`, `symbols`, `dir`, `script`, and `disable`.
+prefix: `timeout`, `hang_kill`, `max_age_days`, `loopbreak`, `phys_resume`, `firstchance`, `window_watchdog`, `lua_heartbeat`, `manual_dump`, `symbols`, `dir`, `script`, and `disable`.
 
 There's also a Linux-only diagnostic for the physics-resume feature:
 
@@ -120,6 +121,29 @@ if crashcapture and crashcapture.get("ready") then
     crashcapture.set("timeout", 30)
 end
 ```
+
+## Manual dump (on demand)
+
+Sometimes you want a report *right now* without waiting for a crash or freeze, for example the server feels sluggish and you want to see what the game thread is doing.\
+An external process can force a capture without touching the game.\
+The report is written just like a freeze report (game-thread stack, Lua traces, modules, diagnostics) and lands in the crash folder with a `dump` type.
+
+**Linux** - send `SIGUSR1` to the server process:
+
+```sh
+kill -USR1 <pid>
+# or, if it's the only srcds_linux on the box:
+pkill -USR1 srcds_linux
+```
+
+**Windows** - signal the per-pid named event `Local\CrashCapture_Dump_<pid>`:
+
+```c
+HANDLE h = OpenEventA(EVENT_MODIFY_STATE, FALSE, "Local\\CrashCapture_Dump_1234");
+SetEvent(h);
+CloseHandle(h);
+```
+Note that on Linux this claims `SIGUSR1`, if another component in your process already uses that signal, the plugin chains to it after capturing, but you can still turn it off here.
 
 ## Recovery hooks
 

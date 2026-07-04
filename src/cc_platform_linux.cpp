@@ -687,6 +687,32 @@ namespace CrashCapture {
         g_dumpDone = 1;
     }
 
+    // SIGUSR1 = external "dump now" request (e.g. `kill -USR1 <pid>`).
+    static struct sigaction g_oldUsr1;
+    static bool g_usr1Installed = false;
+
+    static void ManualDumpHandler(int sig, siginfo_t* info, void* ucontext)
+    {
+        int self = gettid_();
+        if (g_gameThreadTid && self == g_gameThreadTid) {
+            if (!g_inReport) {
+                g_inReport = 1;
+                WriteReport("dump", "manual dump requested (SIGUSR1)", ucontext);
+                g_inReport = 0;
+            }
+        } else {
+            Platform_DumpThread("dump", "manual dump requested (SIGUSR1)");
+        }
+
+        // don't swallow a prior USR1 owner, but never chain into SIG_DFL (that would kill us).
+        if (g_oldUsr1.sa_flags & SA_SIGINFO) {
+            if (g_oldUsr1.sa_sigaction) g_oldUsr1.sa_sigaction(sig, info, ucontext);
+        } else if (g_oldUsr1.sa_handler && g_oldUsr1.sa_handler != SIG_IGN &&
+                   g_oldUsr1.sa_handler != SIG_DFL) {
+            g_oldUsr1.sa_handler(sig);
+        }
+    }
+
     int Platform_RequestLuaBreak()
     {
         int self = gettid_();
@@ -760,6 +786,16 @@ namespace CrashCapture {
         su.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART;
         sigaction(SIGUSR2, &su, NULL);
 
+        if (Cfg().manual_dump && !g_usr1Installed) {
+            struct sigaction sm;
+            memset(&sm, 0, sizeof(sm));
+            sm.sa_sigaction = ManualDumpHandler;
+            sigemptyset(&sm.sa_mask);
+            sm.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART;
+            sigaction(SIGUSR1, &sm, &g_oldUsr1);
+            g_usr1Installed = true;
+        }
+
         Sym_Init();
         if (Cfg().phys_resume) ResolvePhysics();
     }
@@ -769,6 +805,7 @@ namespace CrashCapture {
         for (int i = 0; kFatal[i]; ++i)
             sigaction(kFatal[i], &g_old[kFatal[i]], NULL);
         signal(SIGUSR2, SIG_DFL);
+        if (g_usr1Installed) { sigaction(SIGUSR1, &g_oldUsr1, NULL); g_usr1Installed = false; }
         Sym_Cleanup();
     }
 }
