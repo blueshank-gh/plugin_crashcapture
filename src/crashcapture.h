@@ -33,7 +33,7 @@
     #define CC_SIDE "client"
 #endif
 
-#define CC_VERSION "1.1"
+#define CC_VERSION "1.1.1"
 
 namespace CrashCapture {
     // --------- cc-config ---
@@ -156,6 +156,7 @@ namespace CrashCapture {
     void Platform_DumpThread(const char* kind, const char* reason);
     int Platform_Backtrace(void* ctx, uintptr_t* out, int max);
     uintptr_t Platform_ContextPC(void* ctx);
+    bool Platform_IsGameThread();
 
     // there are different kinds of classified stalls/hangs now.
     enum StallClass { STALL_UNKNOWN = 0, STALL_NATIVE, STALL_PHYSICS, STALL_LUA_INTERP, STALL_LUA_JIT };

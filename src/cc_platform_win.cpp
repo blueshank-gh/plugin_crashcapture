@@ -362,7 +362,12 @@ namespace CrashCapture {
     }
 
     // --------- windows-thread-dumper ---
-    
+
+    bool Platform_IsGameThread()
+    {
+        return g_gameThreadId != 0 && GetCurrentThreadId() == g_gameThreadId;
+    }
+
     void Platform_DumpThread(const char* kind, const char* reason)
     {
         if (InterlockedCompareExchange(&g_inReport, 1, 0) != 0) return;
@@ -391,30 +396,32 @@ namespace CrashCapture {
         Report_SetContext(dispKind, reason, 0);
         Report_Header(dispKind, reason);
 
+        CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
         HANDLE th = (HANDLE)g_gameThreadHandle;
+        bool suspended = false;
+        g_curCtx = NULL;
         if (th && g_gameThreadId != GetCurrentThreadId()) {
-            SuspendThread(th);
-            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
             ctx.ContextFlags = CONTEXT_FULL;
-            if (GetThreadContext(th, &ctx)) {
-                Log::F("\n> target thread id=%u suspended for inspection\n", g_gameThreadId);
-                g_curCtx = &ctx;
+            if (SuspendThread(th) == (DWORD)-1) {
+                Log::Str("\n> SuspendThread failed; reporting calling thread instead.\n");
             } else {
-                Log::Str("\n> GetThreadContext failed; reporting calling thread instead.\n");
-                g_curCtx = NULL;
+                suspended = true;
+                if (GetThreadContext(th, &ctx)) {
+                    Log::F("\n> target thread id=%u suspended for inspection\n", g_gameThreadId);
+                    g_curCtx = &ctx;
+                } else {
+                    Log::Str("\n> GetThreadContext failed; reporting calling thread instead.\n");
+                }
             }
-            Report_Section("Registers", Sec_Registers, NULL, true);
-            Report_Section("Native stack", Sec_Stack, NULL, true);
-            Report_Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
-            ResumeThread(th);
-        } else {
-            g_curCtx = NULL;
-            Report_Section("Registers", Sec_Registers, NULL, true);
-            Report_Section("Native stack", Sec_Stack, NULL, true);
-            Report_Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
         }
 
+        Report_Section("Registers", Sec_Registers, NULL, true);
+        Report_Section("Native stack", Sec_Stack, NULL, true);
+        Report_Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
         Report_Section("Lua", Sec_Lua, NULL, false);
+
+        if (suspended) ResumeThread(th);
+
         Report_Section("Modules", Sec_Modules, NULL, false);
         Report_Section("Diagnostics", Diag_Section, g_curCtx, false);
 

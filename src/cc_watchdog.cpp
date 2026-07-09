@@ -237,6 +237,7 @@ namespace CrashCapture {
             if (!U.IsHungAppWindow(hwnd)) {
                 if (!g_winSawAlive) { // first time the engine window is responsive
                     g_winSawAlive = true;
+                    BindThread(U.GetWindowThreadProcessId(hwnd, NULL));
                     Log::F("[CrashCapture] watching game window %p (class Valve*) for hangs.\n",
                            (void*)hwnd);
                 }

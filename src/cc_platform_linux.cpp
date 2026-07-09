@@ -425,6 +425,11 @@ namespace CrashCapture {
         }
     }
 
+    bool Platform_IsGameThread()
+    {
+        return g_gameThreadTid != 0 && (int)syscall(SYS_gettid) == g_gameThreadTid;
+    }
+
     uintptr_t Platform_ContextPC(void* vctx)
     {
         if (!vctx) return 0;

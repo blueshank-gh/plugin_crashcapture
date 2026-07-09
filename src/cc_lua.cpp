@@ -310,6 +310,11 @@ namespace CrashCapture {
         }
     }
 
+    static bool LocalsReadable(lua_State* L)
+    {
+        return Platform_IsGameThread() && g_api.gettop(L) >= 0;
+    }
+
     struct FrameCtx { lua_State* L; int level; bool more; };
     static void Sec_Frame(void* p)
     {
@@ -328,7 +333,7 @@ namespace CrashCapture {
 
         // C-frame locals are read off the C stack.
         bool luaFrame = ar.what && (ar.what[0] == 'L' || ar.what[0] == 'm');
-        if (!luaFrame) return;
+        if (!luaFrame || !LocalsReadable(L)) return;
 
         int saved = g_api.gettop(L);
         for (int n = 1; n < 200; ++n) {
@@ -381,10 +386,16 @@ namespace CrashCapture {
             return;
         }
         int top0 = g_api.gettop(L);
-        Log::F("- stack top: %d%s\n", top0,
-            top0 < 0 ? " (VM caught mid-call; transient state)" : "");
+        Log::F("- stack top: %d\n", top0);
+
+        if (top0 < 0) {
+            Log::Str("\n_stack top is below base: this lua_State is corrupt, refusing to walk it._\n");
+            return;
+        }
 
         Log::Str("\n**call stack** (frame -- source:line -- name -- locals)\n\n");
+        if (!Platform_IsGameThread())
+            Log::Str("_locals omitted: the VM belongs to another thread._\n\n");
         Log::OpenFence();
         int frames = 0, faults = 0;
         bool stoppedByFault = false;
@@ -446,7 +457,7 @@ namespace CrashCapture {
         f->locals[0] = 0;
 
         bool luaFrame = ar.what && (ar.what[0] == 'L' || ar.what[0] == 'm');
-        if (!luaFrame) return;
+        if (!luaFrame || !LocalsReadable(L)) return;
 
         int saved = g_api.gettop(L);
         int w = 0;
@@ -480,6 +491,7 @@ namespace CrashCapture {
             memset(t, 0, sizeof(*t));
             snprintf(t->realm, sizeof(t->realm), "%s", RealmName(r));
             t->top = g_api.gettop(L);
+            if (t->top < 0) { ++rc; continue; } // corrupt stack... ruh oh.
 
             int faults = 0;
             for (int level = 0; level < maxFrames; ++level) {
