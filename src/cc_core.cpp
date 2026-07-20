@@ -1,6 +1,7 @@
 // Lifecycle, configuration and shared report sections.
 
 #include "crashcapture.h"
+#include "cc_physrecover.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,6 +77,17 @@ namespace CrashCapture {
         c.max_age_days = EnvInt("CRASHCAPTURE_MAX_AGE_DAYS", 14);
         c.loopbreak = EnvInt("CRASHCAPTURE_LOOPBREAK", 1) != 0;
         c.phys_resume = EnvInt("CRASHCAPTURE_PHYS_RESUME", 1) != 0;
+        c.phys_recover = EnvInt("CRASHCAPTURE_PHYS_RECOVER", 1) != 0;
+        c.phys_pin = EnvInt("CRASHCAPTURE_PHYS_PIN", 0) != 0;
+        c.debug = EnvInt("CRASHCAPTURE_DEBUG", 0) != 0;
+        Log::SetDebug(c.debug);
+        c.phys_hook = EnvInt("CRASHCAPTURE_PHYS_HOOK", 1) != 0;
+        c.phys_hook_ms = EnvInt("CRASHCAPTURE_PHYS_HOOK_MS", 250);
+        if (c.phys_hook_ms < 20) c.phys_hook_ms = 20;
+        c.report_debounce_sec = EnvInt("CRASHCAPTURE_REPORT_DEBOUNCE", 15);
+        if (c.report_debounce_sec < 0) c.report_debounce_sec = 0;
+        c.phys_resolve_delay = EnvInt("CRASHCAPTURE_PHYS_RESOLVE_DELAY", 3);
+        if (c.phys_resolve_delay < 0) c.phys_resolve_delay = 0;
 
         // First-chance VEH off on the client: the D3D/ShaderAPI bring-up uses SEH as control flow and intercepting it can break startup.
         #ifdef INTERFACE_PLUGIN
@@ -236,6 +248,9 @@ namespace CrashCapture {
     void Pulse()
     {
         Watchdog_Pulse();
+        #if defined(CC_LINUX) // TODO: windows at some point.
+            PhysRecover_PollGameThread();
+        #endif
         Lua_PollRecovery();
         Lua_PollReady();
     }
@@ -279,6 +294,40 @@ namespace CrashCapture {
     uintptr_t Report_Fault() { return g_ctxFault; }
     uint64_t Report_Uptime() { return MonotonicMs() - g_startMs; }
 
+    // I had to do this, please.
+    const char* Report_Meme()
+    {
+        static const char* const DehMemes[] = {
+            "i think something has happened.",
+            "there appears to be a problem...",
+            "shiver me timbers, the game's shitting itself.",
+            "ah jezz rick we broke it...",
+            "freeman, stop fucking with the microwave!!!",
+            "ah shit, here we go again.",
+            "blueshank everything is broken.",
+            "dude this code is ass.",
+            "well fuck, wanna sprite cranberry?",
+            "man i'm going to bed fuck this shit.",
+            "dafug you mean its not working?",
+            "attempting shutdown, it's not.. it- it's not- it's not shutting down.",
+            "can you sign my petition please?",
+            "hey, you, you're finally awake. fix it.",
+            "the crash is a lie.",
+            "all we had to do was follow the damn report!",
+            "what do the crashes mean, Mason? MASON.",
+            "the right crash, in the wrong place, can make all the difference in the world.",
+            "what did I do to deserve this...",
+            "sometimes, I dream about crashes.",
+            "remember, no crashes.",
+            "harry, yerr are a crash report.",
+            "ITS PEANUT BUTTER CRASHING TIME",
+            "maybe don't press that button.",
+            "@rubat @rubat @rubat @rubat, can u fix it?" // rubat: no.
+        };
+        const size_t MemeCount = sizeof(DehMemes) / sizeof(DehMemes[0]);
+        return DehMemes[(size_t)(MonotonicMs() + time(NULL)) % MemeCount];
+    }
+
     void Report_Header(const char* kind, const char* reason)
     {
         char stamp[32];
@@ -301,11 +350,17 @@ namespace CrashCapture {
         else Log::Str("- **pulse** : never (no heartbeat source in this configuration)\n");
         Log::Flush();
 
-        Log::Notice("\n======================= CrashCapture =======================\n");
+        Report_Banner(kind, reason, Log::Path());
+    }
+
+    void Report_Banner(const char* kind, const char* reason, const char* reportPath)
+    {
+        Log::Notice("\n======================= Crash Capture =======================\n");
+        Log::Notice("  %s\n", Report_Meme());
         Log::Notice("  %s detected\n", kind ? kind : "event");
         Log::Notice("  reason : %s\n", reason ? reason : "-");
-        Log::Notice("  report : %s\n", Log::Path());
-        Log::Notice("============================================================\n\n");
+        if (reportPath && *reportPath) Log::Notice("  report : %s\n", reportPath);
+        Log::Notice("=============================================================\n\n");
     }
 
     void Report_Footer()

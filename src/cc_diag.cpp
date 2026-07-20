@@ -2,6 +2,7 @@
 // On a crash, spins up a FRESH lua_State for live debugging
 
 #include "crashcapture.h"
+#include "cc_signature.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -223,39 +224,10 @@ namespace CrashCapture {
     {
         const char* name = A.tolstring(L, 1, NULL);
         const char* pat  = A.tolstring(L, 2, NULL);
-        const CCModule* m = name ? Modules_FindByName(name) : NULL;
-        if (!m || !pat) { A.pushnil(L); return 1; }
-
-        unsigned char bytes[256]; char mask[256]; int plen = 0;
-        for (const char* p = pat; *p && plen < 256; ) {
-            if (*p == ' ') { ++p; continue; }
-            if (*p == '?') { mask[plen] = '?'; bytes[plen] = 0; ++plen; ++p; if (*p == '?') ++p; continue; }
-            auto hx = [](char c) -> int {
-                if (c >= '0' && c <= '9') return c - '0';
-                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-                return -1;
-            };
-            int hi = hx(p[0]); int lo = p[1] ? hx(p[1]) : -1;
-            if (hi < 0 || lo < 0) { A.pushnil(L); return 1; } // bad pattern
-            bytes[plen] = (unsigned char)((hi << 4) | lo); mask[plen] = 'x'; ++plen; p += 2;
-        }
-        if (plen == 0) { A.pushnil(L); return 1; }
-
-        // page-aware scan so an unreadable hole inside the image can't fault us.
-        uintptr_t base = m->base, end = m->base + m->size;
-        for (uintptr_t a = base; a + plen <= end; ++a) {
-            if ((a & 0xFFF) == 0 || a == base) {
-                if (!Mem_IsReadable((void*)a, 1)) { a = (a & ~(uintptr_t)0xFFF) + 0x1000 - 1; continue; }
-            }
-            int i = 0;
-            for (; i < plen; ++i) {
-                if (mask[i] == '?') continue;
-                if (!Mem_IsReadable((void*)(a + i), 1) || *(unsigned char*)(a + i) != bytes[i]) break;
-            }
-            if (i == plen) { A.pushlightuserdata(L, (void*)a); return 1; }
-        }
-        A.pushnil(L);
+        if (!name || !pat) { A.pushnil(L); return 1; }
+        uintptr_t hit = Sig_Scan(name, pat);
+        if (hit) A.pushlightuserdata(L, (void*)hit);
+        else A.pushnil(L);
         return 1;
     }
 
@@ -401,19 +373,20 @@ namespace CrashCapture {
 
     static void ScanModuleForBytes(lua_State* L, const CCModule* m, const unsigned char* needle, int nlen, int* count, int cap)
     {
-        uintptr_t base = m->base, end = m->base + m->size;
-        bool pageOk = false;
-        for (uintptr_t a = base; a + nlen <= end && *count < cap; ++a) {
-            if ((a & 0xFFF) == 0 || a == base) {
-                pageOk = Mem_IsReadable((void*)a, 1);
-                if (!pageOk) { a = (a & ~(uintptr_t)0xFFF) + 0x1000 - 1; continue; }
-            }
-            if (((a + nlen - 1) & ~(uintptr_t)0xFFF) != (a & ~(uintptr_t)0xFFF) &&
-                !Mem_IsReadable((void*)a, nlen)) continue; // straddles into an unreadable page
-            if (memcmp((void*)a, needle, nlen) == 0) {
-                A.pushlightuserdata(L, (void*)a);
-                A.rawseti(L, -2, ++(*count));
-            }
+        if (nlen <= 0 || nlen > kSigMaxLen) return;
+        int room = cap - *count;
+        if (room <= 0) return;
+
+        CCPattern pat;
+        for (int i = 0; i < nlen; ++i) { pat.bytes[i] = needle[i]; pat.mask[i] = 1; }
+        pat.len = nlen;
+
+        uintptr_t hits[256];
+        if (room > (int)(sizeof(hits) / sizeof(hits[0]))) room = (int)(sizeof(hits) / sizeof(hits[0]));
+        int n = Sig_FindAll(m, &pat, hits, room);
+        for (int i = 0; i < n; ++i) {
+            A.pushlightuserdata(L, (void*)hits[i]);
+            A.rawseti(L, -2, ++(*count));
         }
     }
 

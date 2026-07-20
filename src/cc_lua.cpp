@@ -508,7 +508,7 @@ namespace CrashCapture {
 
     // --------- recovery-hooks ---
     
-    enum { CC_REC_STACK_MAX = 16 };
+    enum { CC_REC_STACK_MAX = 16, CC_REC_ENT_MAX = 32 };
     struct RecoveryInfo {
         char method[16];
         char stall[32];
@@ -517,11 +517,16 @@ namespace CrashCapture {
         uint64_t downtime;
         int  stackCount;
         char stack[CC_REC_STACK_MAX][192];
+        int  entCount;
+        int  entities[CC_REC_ENT_MAX];
     };
     static RecoveryInfo g_recInfo;
     static volatile sig_atomic_t g_recLoopbreak = 0;
     static volatile sig_atomic_t g_recPhysresume = 0;
+    static volatile sig_atomic_t g_recPhysresolve = 0;
     static volatile sig_atomic_t g_recRecovery = 0;
+    static volatile sig_atomic_t g_recPhysresolveWait = 0;
+    static volatile sig_atomic_t g_recResolveFired = 0;
 
     static void RecStr(char* dst, size_t cap, const char* s) { snprintf(dst, cap, "%s", s ? s : ""); }
 
@@ -535,6 +540,26 @@ namespace CrashCapture {
         g_recInfo.stackCount = 0;
         g_recPhysresume = 1;
         g_recRecovery = 1;
+    }
+
+    void Recovery_NotePhysResolve(const int* ents, int n, const char* report)
+    {
+        if (n < 0) n = 0;
+        if (g_recResolveFired) { g_recInfo.entCount = 0; g_recResolveFired = 0; } // new window
+        int added = 0;
+        for (int i = 0; i < n && g_recInfo.entCount < CC_REC_ENT_MAX; ++i) {
+            int e = ents[i];
+            bool dup = false;
+            for (int j = 0; j < g_recInfo.entCount; ++j)
+                if (g_recInfo.entities[j] == e) { dup = true; break; }
+            if (!dup) { g_recInfo.entities[g_recInfo.entCount++] = e; ++added; }
+        }
+        RecStr(g_recInfo.report, sizeof(g_recInfo.report), report);
+        g_recPhysresolveWait = Cfg().phys_resolve_delay; // let physics settle first
+        g_recPhysresolve = 1;
+        Log::Debug("[CC-PHYS] physresolve queued: +%d new, %d pending total (ent[0]=%d), firing in %d pulse(s).\n",
+                    added, g_recInfo.entCount, g_recInfo.entCount > 0 ? g_recInfo.entities[0] : -1,
+                    (int)g_recPhysresolveWait);
     }
 
     void Recovery_NoteRecovered(const char* method, uint64_t downtimeMs, const char* stall, const char* reason, const char* report)
@@ -573,6 +598,15 @@ namespace CrashCapture {
             }
             L->SetField(-2, "stack");
         }
+        if (info.entCount > 0 && strcmp(event, "crashcapture.physresolve") == 0) {
+            L->CreateTable();
+            for (int i = 0; i < info.entCount; ++i) {
+                L->PushNumber((double)(i + 1));
+                L->PushNumber((double)info.entities[i]);
+                L->SetTable(-3);
+            }
+            L->SetField(-2, "entities");
+        }
         if (L->PCall(2, 0, 0) != 0) L->Pop(1);
         L->Pop(2);
     }
@@ -580,19 +614,36 @@ namespace CrashCapture {
     void Lua_PollRecovery()
     {
         int lb = g_recLoopbreak, pr = g_recPhysresume, rc = g_recRecovery;
-        if (!lb && !pr && !rc) return;
+
+        // hold physresolve for phys_resolve_delay real frames (see above)
+        int px = 0;
+        if (g_recPhysresolve) {
+            if (g_recPhysresolveWait > 0) --g_recPhysresolveWait;
+            else { px = 1; g_recPhysresolve = 0; }
+        }
+
+        if (!lb && !pr && !px && !rc) return;
         g_recLoopbreak = g_recPhysresume = g_recRecovery = 0;
 
         RecoveryInfo info = g_recInfo;
         Lua_RefreshStates();
+        int fired = 0;
         for (int r = 0; r < 3; ++r) {
             ILuaInterface* l = g_realm[r];
             if (!l || !Mem_IsReadable(l, 2 * sizeof(void*))) continue;
             void* L = (void*)l->GetState();
             if (!L || !Mem_IsReadable(L, sizeof(void*))) continue;
+            if (px) ++fired;
             if (lb) FireRecoveryHook(l, "crashcapture.loopbreak", info);
             if (pr) FireRecoveryHook(l, "crashcapture.physresume", info);
+            if (px) FireRecoveryHook(l, "crashcapture.physresolve", info);
             if (rc) FireRecoveryHook(l, "crashcapture.recovery", info);
+        }
+        
+        if (px) {
+            Log::Debug("[CC-PHYS] physresolve fired to %d realm(s) with %d entit%s.\n",
+                        fired, info.entCount, info.entCount == 1 ? "y" : "ies");
+            if (fired > 0) g_recResolveFired = 1;
         }
     }
 
@@ -652,7 +703,7 @@ namespace CrashCapture {
         }
     }
 
-    static const char* g_breakMsg = "CrashCapture: interrupting a suspected infinite loop";
+    static const char* g_breakMsg = "Crash Capture: interrupting a suspected infinite loop";
     static void cc_break_hook(lua_State* L, cc_lua_Debug* /*ar*/)
     {
         if (!Mem_IsReadable(L, sizeof(void*))) { Lua_DisarmBreakHook(); return; }
@@ -775,6 +826,11 @@ namespace CrashCapture {
         t[n++] = {"max_age_days", CK_INT, &c.max_age_days, 0};
         t[n++] = {"loopbreak", CK_BOOL, &c.loopbreak, 0};
         t[n++] = {"phys_resume", CK_BOOL, &c.phys_resume, 0};
+        t[n++] = {"phys_recover", CK_BOOL, &c.phys_recover, 0};
+        t[n++] = {"phys_resolve_delay", CK_INT, &c.phys_resolve_delay, 0};
+        t[n++] = {"phys_pin", CK_BOOL, &c.phys_pin, 0};
+        t[n++] = {"debug", CK_BOOL, &c.debug, 0};
+        t[n++] = {"report_debounce", CK_INT, &c.report_debounce_sec, 0};
         t[n++] = {"firstchance", CK_BOOL, &c.firstchance, 0};
         t[n++] = {"window_watchdog", CK_BOOL, &c.window_watchdog, 0};
         t[n++] = {"lua_heartbeat", CK_BOOL, &c.lua_heartbeat, 0};
@@ -820,7 +876,7 @@ namespace CrashCapture {
             return 0;
         }
 
-        CfgEntry buf[16];
+        CfgEntry buf[24];
         const CfgEntry* e = FindCfg(key, buf);
         if (!e) return 0;
 
@@ -862,7 +918,7 @@ namespace CrashCapture {
             return 1;
         }
 
-        CfgEntry buf[16];
+        CfgEntry buf[24];
         const CfgEntry* e = FindCfg(key, buf);
         if (!e) { g_api.pushnil(L); return 1; }
 
@@ -894,6 +950,12 @@ namespace CrashCapture {
         return 2;
     }
 
+    static int cc_lua_dump(lua_State* L)
+    {
+        Platform_DumpThread("dump", "manual dump requested (LUA)");
+        return 0;
+    }
+
     void Lua_InstallApi(void* iface)
     {
         ILuaInterface* L = (ILuaInterface*)iface;
@@ -916,6 +978,7 @@ namespace CrashCapture {
             L->PushCFunction(cc_lua_get); L->SetField(-2, "get");
             L->PushCFunction(cc_lua_pulse); L->SetField(-2, "pulse");
             L->PushCFunction(cc_lua_physpause); L->SetField(-2, "phys_pause");
+            L->PushCFunction(cc_lua_dump); L->SetField(-2, "dump");
         L->SetField(-2, "crashcapture");
         L->Pop();
 

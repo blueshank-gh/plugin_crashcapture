@@ -3,6 +3,7 @@
 // If the pulse stops advancing for longer than the timeout, the game thread is considered stuck.
 
 #include "crashcapture.h"
+#include "cc_physrecover.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -72,18 +73,45 @@ namespace CrashCapture {
         g_lastPulseMs = MonotonicMs();
     }
 
+    static uint64_t g_lastReportMs = 0; // when we last WROTE a hang report (for debounce)
+
     // dump the stuck game thread and (best effort) ask Lua to break the loop.
     static void FireHangDump(uint64_t now, const char* reason)
     {
         g_hangStartMs = now;
-        Platform_DumpThread("hang", reason);
-        snprintf(g_hangReportPath, sizeof(g_hangReportPath), "%s", Log::Path());
-        snprintf(g_hangReason, sizeof(g_hangReason), "%s", reason ? reason : "");
         g_hangMethod[0] = 0;
+        bool writeReport = Cfg().report_debounce_sec <= 0 || g_lastReportMs == 0 ||
+                           (now - g_lastReportMs) >= (uint64_t)Cfg().report_debounce_sec * 1000ull;
+        bool physResolved = false;
+        bool handled = false;
+    #if defined(CC_LINUX)
+        Log::Debug("[CC-PHYS] hang fired: phys_recover=%d writeReport=%d (class pre-dump=%d)\n",
+                    (int)Cfg().phys_recover, (int)writeReport, g_lastStallClass);
+        if (Cfg().phys_recover) {
+            int r = Platform_RequestPhysResolve("hang", reason, writeReport);
+            Log::Debug("[CC-PHYS] resolve returned r=%d (class post-dump=%d)\n", r, g_lastStallClass);
+            if (r >= 0) handled = true;
+            if (r == 1) {                // resumed out of a physics hang
+                physResolved = true;
+                snprintf(g_hangMethod, sizeof(g_hangMethod), "physresolve");
+                Log::Str("[CrashCapture] hang: targeted physics recovery attempted.\n");
+            }
+        }
+    #endif
+        if (!handled && writeReport)
+            Platform_DumpThread("hang", reason);
+
+        if (writeReport) {
+            g_lastReportMs = now;
+            snprintf(g_hangReportPath, sizeof(g_hangReportPath), "%s", Log::Path());
+        } else {
+            Log::Str("[CrashCapture] hang: recovered again; report suppressed (debounced).\n");
+        }
+        snprintf(g_hangReason, sizeof(g_hangReason), "%s", reason ? reason : "");
         g_hangPending = true;
 
         // only worth arming the Lua loop-break when the stall is actually in Lua...
-        if (Cfg().loopbreak) {
+        if (Cfg().loopbreak && !physResolved) {
             if (g_lastStallClass == STALL_NATIVE || g_lastStallClass == STALL_PHYSICS) {
                 Log::Str("[CrashCapture] hang: stall is not in Lua, loop-break skipped.\n");
             } else if (Lua_BreakLoop("CrashCapture: breaking suspected infinite loop")) {
@@ -106,6 +134,15 @@ namespace CrashCapture {
                  (unsigned long long)dur);
         Log::AppendNote(g_hangReportPath, note);
         Recovery_NoteRecovered(g_hangMethod, dur, StallClassName(g_lastStallClass), g_hangReason, g_hangReportPath);
+
+        #if defined(CC_LINUX)
+            if (PhysRecover_Available()) {
+                int ents[32];
+                int n = PhysRecover_FrozenEntities(ents, 32);
+                if (n > 0) Recovery_NotePhysResolve(ents, n, g_hangReportPath);
+                PhysRecover_Reset();
+            }
+        #endif
     }
 
     // after a dump, optionally kill the process once the grace window passes

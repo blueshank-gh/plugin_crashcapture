@@ -33,7 +33,7 @@
     #define CC_SIDE "client"
 #endif
 
-#define CC_VERSION "1.1.1"
+#define CC_VERSION "1.2.0"
 
 namespace CrashCapture {
     // --------- cc-config ---
@@ -42,7 +42,14 @@ namespace CrashCapture {
         int hang_kill_sec;    // CRASHCAPTURE_HANG_KILL
         int max_age_days;     // CRASHCAPTURE_MAX_AGE_DAYS
         bool loopbreak;       // CRASHCAPTURE_LOOPBREAK
-        bool phys_resume;     // CRASHCAPTURE_PHYS_RESUME (Linux only, sad)
+        bool phys_resume;     // CRASHCAPTURE_PHYS_RESUME
+        bool phys_recover;    // CRASHCAPTURE_PHYS_RECOVER
+        bool phys_pin;        // CRASHCAPTURE_PHYS_PIN
+        bool debug;           // CRASHCAPTURE_DEBUG - enable Log::Debug traces
+        bool phys_hook;       // CRASHCAPTURE_PHYS_HOOK
+        int phys_hook_ms;     // CRASHCAPTURE_PHYS_HOOK_MS
+        int report_debounce_sec; // CRASHCAPTURE_REPORT_DEBOUNCE
+        int phys_resolve_delay; // CRASHCAPTURE_PHYS_RESOLVE_DELAY
         bool firstchance;     // CRASHCAPTURE_FIRSTCHANCE
         bool window_watchdog; // CRASHCAPTURE_WINDOW_WATCHDOG
         bool lua_heartbeat;   // CRASHCAPTURE_LUA_HEARTBEAT
@@ -72,6 +79,8 @@ namespace CrashCapture {
         void Str(const char* s);
         void F(const char* fmt, ...);
         void Notice(const char* fmt, ...);
+        void Debug(const char* fmt, ...);
+        void SetDebug(bool on);
         void OpenFence();
         void CloseFence();
         void Flush();
@@ -99,6 +108,7 @@ namespace CrashCapture {
     void Sym_Init();
     void Sym_Cleanup();
     bool Sym_Resolve(uintptr_t addr, char* out, size_t outsz); // true if it wrote a name
+    bool Sym_ResolveRaw(uintptr_t addr, char* out, size_t outsz); // no demangling
     uintptr_t Sym_Lookup(const char* module, const char* name); // name -> address; module optional (NULL = search all)
 
     struct CCThread {
@@ -128,6 +138,7 @@ namespace CrashCapture {
     void Lua_PollRecovery();
     void Lua_PollReady();
     void Recovery_NotePhysResume(const char* stall, const char* report);
+    void Recovery_NotePhysResolve(const int* ents, int n, const char* report); // frozen entity indices for the hook
     void Recovery_NoteRecovered(const char* method, uint64_t downtimeMs, const char* stall, const char* reason, const char* report);
     const char* StallClassName(int cls);
 
@@ -147,6 +158,12 @@ namespace CrashCapture {
     };
     int Lua_CaptureTraces(CCLuaTrace* out, int maxRealms);
 
+    // --------- cc-physhook (Linux x86: detour IVP to prevent physics hangs) ---
+    void PhysHook_Init();
+    bool PhysHook_Install();
+    void PhysHook_Uninstall();
+    uint64_t PhysHook_LagEpisodes();
+
     // --------- cc-diag ---
     void Diag_Section(void* nativeCtx);
 
@@ -163,6 +180,7 @@ namespace CrashCapture {
     extern volatile int g_lastStallClass;
     int Report_ClassifyStall(void* ctx, char* out, size_t outsz);
     int Platform_RequestLuaBreak();
+    int Platform_RequestPhysResolve(const char* kind, const char* reason, bool writeReport); // classify(+dump if writeReport)+resume-if-physics (1 resumed, 0 handled-no-resume, <0 failed)
     int Platform_SetPhysPaused(int paused);
     int Platform_PhysPaused();
 
@@ -175,7 +193,9 @@ namespace CrashCapture {
     void Report_StackScan(void* ctx);
 
     // --------- cc-shared ---
+    const char* Report_Meme();
     void Report_Header(const char* kind, const char* reason);
+    void Report_Banner(const char* kind, const char* reason, const char* reportPath); // console-only banner; NULL path = no "report :" line
     void Report_Footer();
     void Report_SetContext(const char* kind, const char* reason, uintptr_t fault);
     const char* Report_Kind();

@@ -4,6 +4,8 @@
 // thread by signalling it (SIGUSR2) so it writes its own context.
 
 #include "crashcapture.h"
+#include "cc_signature.h"
+#include "cc_physrecover.h"
 
 #if defined(CC_LINUX)
 
@@ -36,12 +38,14 @@ namespace CrashCapture {
     static volatile sig_atomic_t g_inReport = 0;
 
     // cross-thread handshake (SIGUSR2)
-    enum { CC_ACT_DUMP = 0, CC_ACT_LUABREAK = 1 };
+    enum { CC_ACT_DUMP = 0, CC_ACT_LUABREAK = 1, CC_ACT_PHYSRESOLVE = 2 };
     static const char* volatile g_pendKind = NULL;
     static const char* volatile g_pendReason = NULL;
     static volatile sig_atomic_t g_pendAction = CC_ACT_DUMP;
     static volatile sig_atomic_t g_dumpDone = 0;
     static volatile sig_atomic_t g_breakArmed = 0;
+    static volatile sig_atomic_t g_pendWriteReport = 1; // physresolve: 0 = classify+resume, no report file
+    static volatile sig_atomic_t g_pendForceResume = 0; // physresolve: 1 = resume even mid list-mutation (give-up valve)
 
     // RunProtected state (single report path, guarded by g_inReport)
     static sigjmp_buf g_jb;
@@ -471,160 +475,11 @@ namespace CrashCapture {
     struct FmtCtx { uintptr_t addr; char* out; size_t sz; };
     static void Sec_FormatAddr(void* p) { FmtCtx* f = (FmtCtx*)p; FormatAddress(f->addr, f->out, f->sz); }
 
-    // --------- linux-physics-resume ---
-
-    typedef void* (*tPhysicsGameSystem)();
-    static tPhysicsGameSystem g_physGameSystem = NULL;
-    static void* g_physframeLib = NULL;
-    static bool g_physframeTried = false;
-    static unsigned g_physResumeCount = 0;
-    static const unsigned kMaxPhysResume = 100; // bail to a real crash if it keeps re-faulting
-
-    // CPhysicsHook::m_bPaused offset
-    #if defined(CC_X86)
-        #define CC_PHYS_PAUSED_OFFSET 88
-    #else
-        #define CC_PHYS_PAUSED_OFFSET 143 // TODO: unconfirmed
-    #endif
-
-    static void ResolvePhysics()
+    // Raw symbol resolution (no demangle, no cfg gate) for cc_physrecover's frame
+    // matching. The physics crash/hang recovery itself lives in cc_physrecover.cpp.
+    bool Sym_ResolveRaw(uintptr_t addr, char* out, size_t outsz)
     {
-        // TODO: _Z17PhysicsGameSystemv is not visible on x64
-        if (g_physGameSystem) return;
-        g_physGameSystem = (tPhysicsGameSystem)Sym_Lookup("server", "_Z17PhysicsGameSystemv");
-        if (!g_physGameSystem)
-            g_physGameSystem = (tPhysicsGameSystem)Sym_Lookup(NULL, "_Z17PhysicsGameSystemv");
-    }
-
-    static bool* PhysPausedSlot()
-    {
-    #if defined(CC_PHYS_PAUSED_OFFSET)
-        ResolvePhysics();
-        if (!g_physGameSystem) return NULL;
-        void* hook = g_physGameSystem();
-        if (!hook) return NULL;
-        bool* m_bPaused = (bool*)((char*)hook + CC_PHYS_PAUSED_OFFSET);
-        return Mem_IsReadable(m_bPaused, sizeof(bool)) ? m_bPaused : NULL;
-    #else
-        return NULL; // offset unknown for this arch
-    #endif
-    }
-
-    int Platform_SetPhysPaused(int paused)
-    {
-        bool* slot = PhysPausedSlot();
-        if (!slot) return 0;
-        *slot = paused != 0;
-        return 1;
-    }
-
-    int Platform_PhysPaused()
-    {
-        bool* slot = PhysPausedSlot();
-        return slot ? (*slot ? 1 : 0) : -1;
-    }
-
-    // gmsv_physframe can hard-stop the physics system.
-    static void StopPhysicsDamnit()
-    {
-        if (!g_physframeTried) {
-            g_physframeTried = true;
-            const char* names[] = {
-            #if defined(CC_X64)
-                "garrysmod/lua/bin/gmsv_physframe_linux64.dll", "gmsv_physframe_linux64.dll",
-            #endif
-                "garrysmod/lua/bin/gmsv_physframe_linux.dll", "gmsv_physframe_linux.dll", NULL
-            };
-            for (int i = 0; names[i] && !g_physframeLib; ++i)
-                g_physframeLib = dlopen(names[i], RTLD_LAZY | RTLD_NOLOAD); // already-loaded only
-        }
-        if (!g_physframeLib) return;
-        void (*fn)() = (void (*)())dlsym(g_physframeLib, "stop_physics_damnit");
-        if (fn) fn();
-    }
-
-    // captured register state to resume Host_RunFrame at the post-call instruction
-    struct ResumeTarget {
-        bool foundPhys;
-        bool have;
-        uintptr_t ip, sp;
-    #if defined(CC_X64)
-        uintptr_t rbx, rbp, r12, r13, r14, r15;
-    #else
-        uintptr_t ebx, ebp, esi, edi;
-    #endif
-    };
-
-    static _Unwind_Reason_Code ResumeCb(struct _Unwind_Context* ctx, void* arg)
-    {
-        ResumeTarget* t = (ResumeTarget*)arg;
-        uintptr_t pc = (uintptr_t)_Unwind_GetIP(ctx);
-        if (!pc) return _URC_NO_REASON;
-
-        char nm[256]; nm[0] = 0;
-        if (!SymResolveCore(pc, nm, sizeof(nm), false)) return _URC_NO_REASON;
-
-        if (strstr(nm, "PhysFrame")) t->foundPhys = true;
-        if (t->foundPhys && strstr(nm, "Host_RunFrame")) {
-            t->ip = (uintptr_t)_Unwind_GetIP(ctx);
-            t->sp = (uintptr_t)_Unwind_GetCFA(ctx);
-            #if defined(CC_X64)
-                t->rbx = (uintptr_t)_Unwind_GetGR(ctx, 3);
-                t->rbp = (uintptr_t)_Unwind_GetGR(ctx, 6);
-                t->r12 = (uintptr_t)_Unwind_GetGR(ctx, 12);
-                t->r13 = (uintptr_t)_Unwind_GetGR(ctx, 13);
-                t->r14 = (uintptr_t)_Unwind_GetGR(ctx, 14);
-                t->r15 = (uintptr_t)_Unwind_GetGR(ctx, 15);
-            #else
-                t->ebx = (uintptr_t)_Unwind_GetGR(ctx, 3);
-                t->ebp = (uintptr_t)_Unwind_GetGR(ctx, 5);
-                t->esi = (uintptr_t)_Unwind_GetGR(ctx, 6);
-                t->edi = (uintptr_t)_Unwind_GetGR(ctx, 7);
-            #endif
-            t->have = true;
-            return _URC_END_OF_STACK;
-        }
-        return _URC_NO_REASON;
-    }
-
-    static void DoResumeWalk(void* arg) { _Unwind_Backtrace(ResumeCb, arg); }
-
-    static bool TryPhysicsResume(int sig, void* ucontext)
-    {
-        if (!Cfg().phys_resume || !ucontext) return false;
-        if (sig != SIGSEGV && sig != SIGBUS && sig != SIGFPE && sig != SIGILL) return false;
-        if (g_physResumeCount >= kMaxPhysResume) return false;
-
-        ResolvePhysics();
-
-        ResumeTarget t;
-        memset(&t, 0, sizeof(t));
-        RunProtectedQuiet(DoResumeWalk, &t); // never let the walk recursive kill us
-        if (!t.have) return false;
-
-        // physics off so the next tick doesn't re-fault on the same garbage.
-        Platform_SetPhysPaused(1);
-        StopPhysicsDamnit();
-
-        ucontext_t* uc = (ucontext_t*)ucontext;
-        greg_t* g = uc->uc_mcontext.gregs;
-        #if defined(CC_X64)
-            g[REG_RIP] = (greg_t)t.ip;  g[REG_RSP] = (greg_t)t.sp;
-            g[REG_RBX] = (greg_t)t.rbx; g[REG_RBP] = (greg_t)t.rbp;
-            g[REG_R12] = (greg_t)t.r12; g[REG_R13] = (greg_t)t.r13;
-            g[REG_R14] = (greg_t)t.r14; g[REG_R15] = (greg_t)t.r15;
-            g[REG_RAX] = 0; // physics call "return value" - unknown
-        #else
-            g[REG_EIP] = (greg_t)t.ip;  g[REG_ESP] = (greg_t)t.sp;
-            g[REG_EBX] = (greg_t)t.ebx; g[REG_EBP] = (greg_t)t.ebp;
-            g[REG_ESI] = (greg_t)t.esi; g[REG_EDI] = (greg_t)t.edi;
-            g[REG_EAX] = 0;
-        #endif
-        ++g_physResumeCount;
-        Log::F("[CrashCapture] physics fault recovered: resumed Host_RunFrame (resume #%u; physics paused).\n", g_physResumeCount);
-        Log::Flush();
-        Recovery_NotePhysResume("physics", Log::Path());
-        return true;
+        return SymResolveCore(addr, out, outsz, false);
     }
 
     // --------- linux-signal-entry ---
@@ -654,7 +509,7 @@ namespace CrashCapture {
 
         // physics fault on the game thread? pause physics and resume instead of dying.
         if (g_gameThreadTid == 0 || tid == g_gameThreadTid) {
-            if (TryPhysicsResume(sig, ucontext)) {
+            if (PhysRecover_ResumeFromFault(sig, ucontext)) {
                 g_inReport = 0;
                 return;
             }
@@ -680,6 +535,26 @@ namespace CrashCapture {
         if (g_pendAction == CC_ACT_LUABREAK) {
             g_pendAction = CC_ACT_DUMP; // one-shot
             g_breakArmed = (sig_atomic_t)(g_inReport ? 0 : Lua_ArmBreakHook());
+            g_dumpDone = 1;
+            return;
+        }
+        if (g_pendAction == CC_ACT_PHYSRESOLVE) {
+            g_pendAction = CC_ACT_DUMP; // one-shot
+            if (!g_inReport) {
+                g_inReport = 1;
+                if (g_pendWriteReport) {
+                    WriteReport(g_pendKind ? g_pendKind : "hang",
+                                g_pendReason ? g_pendReason : "hang", ucontext);
+                } else {
+                    char stall[128];
+                    g_lastStallClass = Report_ClassifyStall(ucontext, stall, sizeof(stall));
+                }
+                g_inReport = 0;
+            }
+            Log::Debug("[CC-PHYS] handler: physresolve action, class=%d (physics=%d) force=%d\n",
+                        g_lastStallClass, (int)(g_lastStallClass == STALL_PHYSICS), (int)g_pendForceResume);
+            g_breakArmed = (g_lastStallClass == STALL_PHYSICS)
+                             ? (sig_atomic_t)PhysRecover_ResumeFromHang(ucontext, g_pendForceResume != 0) : 0;
             g_dumpDone = 1;
             return;
         }
@@ -736,6 +611,31 @@ namespace CrashCapture {
         }
         if (!g_dumpDone) { g_pendAction = CC_ACT_DUMP; return -1; }
         return (int)g_breakArmed;
+    }
+
+    int Platform_RequestPhysResolve(const char* kind, const char* reason, bool writeReport)
+    {
+        int self = gettid_();
+        if (!g_gameThreadTid || g_gameThreadTid == self) return -1;
+
+        g_pendKind = kind ? kind : "hang";
+        g_pendReason = reason ? reason : "hang";
+
+        g_breakArmed = 0;
+        g_dumpDone = 0;
+        g_pendWriteReport = writeReport ? 1 : 0;
+        g_pendForceResume = 0;
+        g_pendAction = CC_ACT_PHYSRESOLVE;
+        if (syscall(SYS_tgkill, getpid(), g_gameThreadTid, SIGUSR2) != 0) {
+            g_pendAction = CC_ACT_DUMP;
+            return -1;
+        }
+        for (int i = 0; i < 2000 && !g_dumpDone; ++i) {
+            struct timespec ts = { 0, 1000000 }; // 1ms
+            nanosleep(&ts, NULL);
+        }
+        if (!g_dumpDone) { g_pendAction = CC_ACT_DUMP; return -1; }
+        return (int)g_breakArmed; // 0 = no resume / non-physics, 1 = escaped
     }
 
     void Platform_DumpThread(const char* kind, const char* reason)
@@ -802,11 +702,15 @@ namespace CrashCapture {
         }
 
         Sym_Init();
-        if (Cfg().phys_resume) ResolvePhysics();
+        PhysRecover_Init();
+        PhysHook_Init();
+        if (Cfg().phys_resume || Cfg().phys_recover || Cfg().phys_hook)
+            Sig_Init();
     }
 
     void Platform_Uninstall()
     {
+        PhysHook_Uninstall(); // remove IVP detours FIRST so nothing jumps into freed memory
         for (int i = 0; kFatal[i]; ++i)
             sigaction(kFatal[i], &g_old[kFatal[i]], NULL);
         signal(SIGUSR2, SIG_DFL);

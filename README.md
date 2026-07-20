@@ -1,6 +1,17 @@
-# plugin_crashcapture
+<div align="center">
+  <picture>
+  <img width="590" height="79" src="./logo.png">
+  </picture>
 
-A crash and freeze logger for Garry's Mod servers.\
+
+</div>
+
+---
+
+The sole goal of the project is to report, mitigate and recover severe crashes/hangs.\
+This is targeting baseline garry's mod, not custom implementations/overrides to the game.\
+However this can work on heavily modified versions of the game.
+
 Thanks to **Buildstruct** for infrastructure testing.\
 Based on https://github.com/Python1320/gmsv_segfault
 
@@ -33,7 +44,7 @@ The easiest and recommended way is to load it as a binary module:
 That's it, once loaded, it watches for crashes and freezes on its own.
 
 We do support other ways of attaching, via either injection, plugins or sideloading, either way is fine.\
-For early crashes during game startup, we recommend source plugin for servers, and for client, use sideloading by mimic'ing `version.dll` (just rename it to it and place it near the executable for windows).
+For early crashes during game startup, we recommend source plugin for servers, and for client, use sideloading by mimic'ing `version.dll` (just rename it to it and place it near the executable for windows, **not near the launcher**).
 
 ## Settings
 
@@ -47,6 +58,8 @@ The defaults are sensible, so you only need these if you want to change somethin
 | `CRASHCAPTURE_HANG_KILL` | `0` | After a freeze report, force-close the process this many seconds later. `0` means never. |
 | `CRASHCAPTURE_LOOPBREAK` | `1` | On a freeze, if the stalled thread is in Lua, arms a Lua debug hook on every realm that raises an error to break out of a stuck loop. |
 | `CRASHCAPTURE_PHYS_RESUME` | `1` | Linux only, when a fatal fault happens inside the physics tick (`PhysFrame`, under `Host_RunFrame`), pause physics and resume the game thread as if the physics call returned. |
+| `CRASHCAPTURE_PHYS_HOOK` | `1` | Linux only, prevents runaway physics hangs at the source instead of just reporting them. |
+| `CRASHCAPTURE_PHYS_HOOK_MS` | `250` | per-tick budget, in milliseconds, before the hook above steps in. |
 | `CRASHCAPTURE_WINDOW_WATCHDOG` | `1` | On Windows clients with no other heartbeat, detect a frozen game by watching its window. |
 | `CRASHCAPTURE_LUA_HEARTBEAT` | `1` | Use a lightweight in-game timer as the freeze heartbeat. |
 | `CRASHCAPTURE_MANUAL_DUMP` | `1` | Let an external process force a report on demand. |
@@ -78,9 +91,10 @@ crashcapture.pulse() -- manual heartbeat
 > `crashcapture.get("ready")` (see [Knowing when it's ready](#knowing-when-its-ready)).
 
 Keys mirror the settings above, lower-cased and without the `CRASHCAPTURE_`
-prefix: `timeout`, `hang_kill`, `max_age_days`, `loopbreak`, `phys_resume`, `firstchance`, `window_watchdog`, `lua_heartbeat`, `manual_dump`, `symbols`, `dir`, `script`, and `disable`.
+prefix: `timeout`, `hang_kill`, `max_age_days`, `loopbreak`, `phys_resume`, `phys_recover`, `phys_pin`, `phys_resolve_delay`, `debug`, `report_debounce`, `firstchance`, `window_watchdog`, `lua_heartbeat`, `manual_dump`, `symbols`, `dir`, `script`, and `disable`.
 
 There's also a Linux-only diagnostic for the physics-resume feature:
+> This is deprecate due to the existing `physenv.SetPhysicsPaused( boolean pause )`
 
 ```lua
 local applied, state = crashcapture.phys_pause(true) -- pause physics
@@ -145,6 +159,8 @@ CloseHandle(h);
 ```
 Note that on Linux this claims `SIGUSR1`, if another component in your process already uses that signal, the plugin chains to it after capturing, but you can still turn it off here.
 
+If you require to dump via lua, simply call `crashcapture.dump()`, this will generate in-place of where this was called from.
+
 ## Recovery hooks
 
 Some freezes are recoverable, for example a stuck Lua loop can be broken (`loopbreak`).\
@@ -156,6 +172,7 @@ The hooks run **on the game thread at the next safe tick**, so it's safe to do n
 |---|---|
 | `crashcapture.loopbreak` | A suspected infinite Lua loop was interrupted. |
 | `crashcapture.physresume` | A physics fault was resumed. |
+| `crashcapture.physresolve` | A physics hang was mitigated. |
 | `crashcapture.recovery` | Any time the game thread recovers from a freeze. |
 
 Each hook receives a single `info` table.\
@@ -167,10 +184,11 @@ Fields are present only when known:
 - `info.report` - path to the full report file.
 - `info.downtime` - milliseconds the game thread was stalled (recovery only).
 - `info.stack?` - array of `"source:line in name"` strings captured from the stuck Lua call stack.
+- `info.entities?` - **`physresolve` only**: array of entity indices the plugin flagged as the offending physics objects (see below).
 
 ```lua
-hook.Add("crashcapture.recovery", "notify_staff", function(info)
-    print(("[CrashCapture] recovered via %s after %dms (%s)")
+hook.Add("crashcapture.recovery", "notify_recovery", function(info)
+    print(("[Crash Capture] recovered via %s after %dms (%s)")
         :format(info.method or "self", info.downtime or 0, info.stall or "?"))
     if info.report then print("  report:", info.report) end
 end)
@@ -178,7 +196,23 @@ end)
 hook.Add("crashcapture.loopbreak", "log_loop", function(info)
     for _, frame in ipairs(info.stack or {}) do print("  ", frame) end
 end)
+
+hook.Add("crashcapture.physresolve", "remove_offenders", function(info)
+    for _, idx in ipairs(info.entities or {}) do
+        local ent = Entity(idx)
+        if IsValid(ent) then
+            print("[Crash Capture] run away entity #" .. idx)
+        end
+    end
+end)
 ```
+
+A few things worth knowing about physresolve:
+
+- It fires a few frames **after** the hang is caught (tunable via the `phys_resolve_delay` setting), so physics has settled before your handler runs.
+- Players, NPCs and physgun-held props are **never** reported, so you won't be handed something you shouldn't delete.
+- If a contraption keeps re-triggering, the same entity can show up across repeated episodes (deduped within one window, not forever), so keep your handler idempotent, the `IsValid` check above is enough.
+- `phys_pin` is for if you need crash capture to handle freezing, this tends to be unstable and we recommend handling it in lua itself.
 
 ## Live memory diagnostics (`CRASHCAPTURE_SCRIPT`)
 

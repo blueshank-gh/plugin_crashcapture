@@ -94,6 +94,25 @@ namespace CrashCapture::Log {
         WriteStderr(buf, (size_t)len);
     }
 
+    static bool g_debug = false;
+    void SetDebug(bool on) { g_debug = on; }
+
+    void Debug(const char* fmt, ...)
+    {
+        if (!g_debug) return;
+        char buf[1024];
+        va_list args;
+        va_start(args, fmt);
+        int len = vsnprintf(buf, sizeof(buf), fmt, args);
+        va_end(args);
+        if (len <= 0) return;
+        if ((size_t)len >= sizeof(buf)) len = sizeof(buf) - 1;
+        #if defined(CC_WINDOWS)
+            OutputDebugStringA(buf);
+        #endif
+        WriteStderr(buf, (size_t)len);
+    }
+
     void Str(const char* s)
     {
         if (s) Raw(s, strlen(s));
