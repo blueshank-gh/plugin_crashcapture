@@ -144,14 +144,14 @@ CC_EXPORT void* CreateInterface(const char* name, int* returncode)
 #include <windows.h>
 
 // version.dll export proxying lives in cc_mimic.cpp
-BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
+BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID reserved)
 {
     switch (reason) {
     case DLL_PROCESS_ATTACH:
         CrashCapture::Init();
         break;
     case DLL_PROCESS_DETACH:
-        CrashCapture::Shutdown();
+        if (reserved == NULL) CrashCapture::Shutdown();
         break;
     default:
         break;
