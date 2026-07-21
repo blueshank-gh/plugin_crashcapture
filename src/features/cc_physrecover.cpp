@@ -170,13 +170,15 @@ namespace CrashCapture {
     }
 
     // exploding set IVP_Real_Object* pulled from the saturated queue's mindist
-    static uintptr_t g_rawIvp[64]; static int g_nRawIvp = 0;
+    static uintptr_t g_rawIvp[64]; static uint16_t g_rawCount[64]; static int g_nRawIvp = 0;
     static void RawIvpAdd(uintptr_t p)
     {
         if (!p || (p & (sizeof(void*) - 1))) return;
+        for (int i = 0; i < g_nRawIvp; ++i) if (g_rawIvp[i] == p) { ++g_rawCount[i]; return; }
         if (g_nRawIvp >= (int)(sizeof(g_rawIvp) / sizeof(g_rawIvp[0]))) return;
-        for (int i = 0; i < g_nRawIvp; ++i) if (g_rawIvp[i] == p) return;
-        g_rawIvp[g_nRawIvp++] = p;
+        g_rawIvp[g_nRawIvp] = p;
+        g_rawCount[g_nRawIvp] = 1;
+        ++g_nRawIvp;
     }
 
     // cc_physhook bridge for mid-tick on the game thread when the hook skips a runaway mindist
@@ -291,6 +293,27 @@ namespace CrashCapture {
         return false;
     }
 
+    // promote the counted raw set -> g_pending, frequency-ranked
+    static int PromoteRawOffenders()
+    {
+        int maxC = 0;
+        for (int i = 0; i < g_nRawIvp; ++i) if ((int)g_rawCount[i] > maxC) maxC = (int)g_rawCount[i];
+        int thresh = 1;
+        if (maxC >= 3) { thresh = maxC / 4; if (thresh < 2) thresh = 2; }
+
+        int added = 0, dropped = 0;
+        for (int i = 0; i < g_nRawIvp; ++i) {
+            if ((int)g_rawCount[i] < thresh) { ++dropped; continue; }
+            uintptr_t obj = AsPhysObject(g_rawIvp[i]);
+            if (obj && !Known(obj) && g_nPending < kMaxPhys) { g_pending[g_nPending++] = obj; ++added; }
+        }
+        g_nRawIvp = 0;
+        if (dropped)
+            Log::Debug("[CC-PHYS] phys recover: frequency gate dropped %d low-count object(s) "
+                   "(max mindist hits %d, threshold %d).\n", dropped, maxC, thresh);
+        return added;
+    }
+
     // scan [spLo, spHi) for validated offenders and queue every new one (up to kMaxPhys).
     struct ScanArgs { uintptr_t lo, hi; int queued; };
     static void ScanForOffenders(void* arg)
@@ -341,25 +364,51 @@ namespace CrashCapture {
         return *(uintptr_t*)shSlot != 0;
     }
 
+    // CPhysicsObject -> its IVP_Core, validated readable through the highest field we touch.
+    static uintptr_t ObjCore(uintptr_t obj)
+    {
+        if (!kIvpCore) return 0;
+
+        uintptr_t ivpSlot = obj + kObjIvp;
+        if (!Mem::IsReadable((void*)ivpSlot, sizeof(void*))) return 0;
+        uintptr_t ivp = *(uintptr_t*)ivpSlot;
+        if (!PtrOk(ivp)) return 0;
+
+        uintptr_t coreSlot = ivp + kIvpCore;
+        if (!Mem::IsReadable((void*)coreSlot, sizeof(void*))) return 0;
+        uintptr_t core = *(uintptr_t*)coreSlot;
+
+        // must cover the highest field we read/store (speed vs rot_speed swap order by arch)
+        const int hi = (kCoreSpeed > kCoreRotSpeed ? kCoreSpeed : kCoreRotSpeed) + 3 * (int)sizeof(uint32_t);
+        if (!PtrOk(core) || !Mem::IsReadable((void*)core, (size_t)hi)) return 0;
+        return core;
+    }
+
+    // velocity gating, swept up by the wide net sits at ~zero on every core vector, an exploding object has huge (often NaN/inf) ones.
+    // -1 unknown, 0 agitated, 1 calm.
+    static const float kCalmSpeedSq = 1.0f; // combined |speed|^2 + |rot|^2 + pending changes, IVP units
+    static int ObjectCalmState(uintptr_t obj)
+    {
+        uintptr_t core = ObjCore(obj);
+        if (!core) return -1;
+        if (*(unsigned char*)core & kCoreStatic) return 1; // immovable, can't be the offender
+
+        const int offs[4] = {kCoreSpeed, kCoreRotSpeed, kCoreSpeedChange, kCoreRotChange};
+        float sq = 0;
+        for (int j = 0; j < 4; ++j)
+            for (int i = 0; i < 3; ++i) {
+                float v = *(float*)(core + offs[j] + i * (int)sizeof(float));
+                sq += v * v;
+            }
+        return (sq < kCalmSpeedSq) ? 1 : 0; // NaN/inf compare false -> agitated
+    }
+
     // replication of EnableMotion's set_pinned, this is to stop objects from moving.
     // calling the actual enable motion will cause collision checks, we can't have that.
     static bool FreezeObject(uintptr_t obj)
     {
-        if (!kIvpCore) return false; // object model not reversed for this arch
-
-        uintptr_t ivpSlot = obj + kObjIvp;
-        if (!Mem::IsReadable((void*)ivpSlot, sizeof(void*))) return false;
-        uintptr_t ivp = *(uintptr_t*)ivpSlot;
-        if (!PtrOk(ivp)) return false;
-
-        uintptr_t coreSlot = ivp + kIvpCore;
-        if (!Mem::IsReadable((void*)coreSlot, sizeof(void*))) return false;
-        uintptr_t core = *(uintptr_t*)coreSlot;
-
-        // must cover the highest field we store (speed vs rot_speed swap order by arch)
-        const int hi = (kCoreSpeed > kCoreRotSpeed ? kCoreSpeed : kCoreRotSpeed) + 3 * (int)sizeof(uint32_t);
-        if (!PtrOk(core) || !Mem::IsReadable((void*)core, (size_t)hi))
-            return false;
+        uintptr_t core = ObjCore(obj);
+        if (!core) return false;
 
         unsigned char* flags = (unsigned char*)core;
         if (*flags & kCoreStatic) return false; // already immovable
@@ -378,16 +427,24 @@ namespace CrashCapture {
         return true;
     }
 
-    struct FreezeArgs { int frozen; };
+    struct FreezeArgs { int frozen; int calmSkipped; };
 
     static void FreezeQueuedInner(void* arg)
     {
         FreezeArgs* fa = (FreezeArgs*)arg;
         uintptr_t vptr = Vptr();
+
+        bool anyAgitated = false;
+        for (int i = 0; i < g_nPending; ++i) {
+            uintptr_t obj = g_pending[i];
+            if (PtrOk(obj) && *(uintptr_t*)obj == vptr && ObjectCalmState(obj) == 0) { anyAgitated = true; break; }
+        }
+
         for (int i = 0; i < g_nPending; ++i) {
             uintptr_t obj = g_pending[i];
             if (!PtrOk(obj) || *(uintptr_t*)obj != vptr) continue;
             if (IsShadowControlled(obj)) continue;
+            if (anyAgitated && ObjectCalmState(obj) == 1) { ++fa->calmSkipped; continue; }
             int ent = ObjEntIndex(obj);
             if (Cfg().phys_pin && !FreezeObject(obj)) continue;
             if (g_nFrozen < kMaxPhys) g_frozen[g_nFrozen++] = obj;
@@ -399,8 +456,10 @@ namespace CrashCapture {
 
     int Phys::Recover::FreezeQueued()
     {
-        FreezeArgs fa = {0};
+        FreezeArgs fa = {0, 0};
         RunProtectedQuiet(FreezeQueuedInner, &fa);
+        if (fa.calmSkipped)
+            Log::F("[Crash Capture] phys recover: velocity gate skipped %d calm bystander(s).\n", fa.calmSkipped);
         g_nPending = 0;
         return fa.frozen;
     }
@@ -439,13 +498,9 @@ namespace CrashCapture {
         // cc_physhook prevented a hang and collected the offenders.
         if (g_hookLagged) {
             g_hookLagged = false;
-            for (int i = 0; i < g_nRawIvp; ++i) {
-                uintptr_t obj = AsPhysObject(g_rawIvp[i]);
-                if (obj && !Known(obj) && g_nPending < kMaxPhys) g_pending[g_nPending++] = obj;
-            }
+            PromoteRawOffenders();
 
             bool b_BannerDebounce = BannerDebounce();
-            g_nRawIvp = 0;
             int frozen = 0;
             if (g_nPending > 0) {
                 frozen = Phys::Recover::FreezeQueued();
@@ -454,7 +509,7 @@ namespace CrashCapture {
                     int nEnt = Phys::Recover::FrozenEntities(ents, kMaxPhys);
                     if (nEnt > 0) Recovery::NotePhysResolve(ents, nEnt, NULL);
                     if (!b_BannerDebounce)
-                        Log::F("[Crash Capture] phys hook: runaway physics tick prevented, %d offender(s).\n", frozen);
+                        Log::F("[Crash Capture] runaway physics tick prevented, %d offender(s).\n", frozen);
                 }
             }
             
@@ -465,14 +520,9 @@ namespace CrashCapture {
             }
         }
 
-        // signal-path exploding set (gathered by the reset): queue every new offender.
+        // signal-path exploding set, promote the repeat offenders.
         if (g_nRawIvp > 0) {
-            int added = 0;
-            for (int i = 0; i < g_nRawIvp; ++i) {
-                uintptr_t obj = AsPhysObject(g_rawIvp[i]);
-                if (obj && !Known(obj) && g_nPending < kMaxPhys) { g_pending[g_nPending++] = obj; ++added; }
-            }
-            g_nRawIvp = 0;
+            int added = PromoteRawOffenders();
             if (added)
                 Log::F("[Crash Capture] phys recover: queued %d exploding object(s) from the saturated queue's mindists (total pending=%d).\n", added, g_nPending);
         }
@@ -669,8 +719,6 @@ namespace CrashCapture {
             uintptr_t sp = (uintptr_t)g[REG_ESP];
             uintptr_t pc = (uintptr_t)g[REG_EIP];
         #endif
-        static const uintptr_t kStackWindow = 0x20000; // 128 KiB above SP
-        Phys::Recover::MarkOffender(sp, sp + kStackWindow);
 
         // log where the thread is stuck (module+offset, maps to IDA via +0x2A000) so a new hang variant is diagnosable.
         {
@@ -686,16 +734,22 @@ namespace CrashCapture {
         // resolve physenv's time-event queue (its min_hash) so we can reset it below.
         uintptr_t mh = 0;
         bool haveMh = MinListStats(NULL, NULL, &mh);
-
+        static const uintptr_t kStackWindow = 0x20000; // 128 KiB above SP
 
         if (!haveMh || !mh) {
-            Log::Debug("[CC-PHYS] ResumeFromHang: could not resolve min_hash -- cannot reset/escape.\n");
+            // no queue to blame anyone from, have to use a wide stack scan...
+            Phys::Recover::MarkOffender(sp, sp + kStackWindow);
+            Log::Debug("[CC-PHYS] ResumeFromHang: could not resolve min_hash, cannot reset/escape.\n");
             return PHYS_NORESUME;
         }
 
         g_nRawIvp = 0; // ResetMinListInner refills this with the exploding set from the mindists
         ResetArgs ra; ra.mh = mh;
-        RunProtectedQuiet(ResetMinListInner, &ra); // reset the queue in place, fault-guarded
+        RunProtectedQuiet(ResetMinListInner, &ra);
+
+        // stack sweep is only as a last resort, since it can get phys objects not related.
+        if (g_nRawIvp == 0)
+            Phys::Recover::MarkOffender(sp, sp + kStackWindow);
 
         int* mode = EventLoopMode();
         if (mode) { *mode = 1; g_modeForced = true; } // drain loop exits after the cascade
@@ -706,8 +760,8 @@ namespace CrashCapture {
 
         ++g_physResumeCount;
         Log::Debug("[CC-PHYS] ResumeFromHang: reset queue + mode=1, returning to finish the tick "
-                    "(escape #%u; %d offender(s) queued; mh=0x%lx; mode@%p).\n",
-                    g_physResumeCount, g_nPending, (unsigned long)mh, (void*)mode);
+                    "(escape #%u; %d raw / %d pending offender(s); mh=0x%lx; mode@%p).\n",
+                    g_physResumeCount, g_nRawIvp, g_nPending, (unsigned long)mh, (void*)mode);
         return PHYS_RESUMED;
     }
 }
