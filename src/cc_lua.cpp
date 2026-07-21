@@ -54,6 +54,7 @@ namespace CrashCapture {
         int         lastlinedefined;
         char        short_src[CC_LUA_IDSIZE];
         int         i_ci;
+        char        _reserved[128]; // issue#12 - MSVC stack around the variable was assumed corrupted.
     };
 
     typedef void (*cc_lua_Hook)(lua_State*, cc_lua_Debug*);
