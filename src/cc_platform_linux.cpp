@@ -494,6 +494,7 @@ namespace CrashCapture {
             return;
         }
         g_inReport = 1;
+        Log::Panic();
 
         char reason[256];
         char at[512];
@@ -511,6 +512,7 @@ namespace CrashCapture {
         // physics fault on the game thread? pause physics and resume instead of dying.
         if (g_gameThreadTid == 0 || tid == g_gameThreadTid) {
             if (Phys::Recover::ResumeFromFault(sig, ucontext)) {
+                Log::ClearPanic();
                 g_inReport = 0;
                 return;
             }
@@ -533,10 +535,12 @@ namespace CrashCapture {
     // are, or arm the Lua loop-break hook so the write happens on the VM's own thread.
     static void DumpRequestHandler(int /*sig*/, siginfo_t* /*info*/, void* ucontext)
     {
+        Log::Panic();
         if (g_pendAction == CC_ACT_LUABREAK) {
             g_pendAction = CC_ACT_DUMP; // one-shot
             g_breakArmed = (sig_atomic_t)(g_inReport ? 0 : Lua::ArmBreakHook());
             g_dumpDone = 1;
+            Log::ClearPanic();
             return;
         }
         if (g_pendAction == CC_ACT_PHYSRESOLVE) {
@@ -557,15 +561,17 @@ namespace CrashCapture {
             g_breakArmed = (g_lastStallClass == STALL_PHYSICS)
                              ? (sig_atomic_t)Phys::Recover::ResumeFromHang(ucontext, g_pendForceResume != 0) : 0;
             g_dumpDone = 1;
+            Log::ClearPanic();
             return;
         }
-        if (g_inReport) { g_dumpDone = 1; return; }
+        if (g_inReport) { g_dumpDone = 1; Log::ClearPanic(); return; }
         g_inReport = 1;
         const char* kind = g_pendKind ? g_pendKind : "dump";
         const char* reason = g_pendReason ? g_pendReason : "thread inspection";
         WriteReport(kind, reason, ucontext);
         g_inReport = 0;
         g_dumpDone = 1;
+        Log::ClearPanic();
     }
 
     // SIGUSR1 = external "dump now" request (e.g. `kill -USR1 <pid>`).
@@ -574,6 +580,7 @@ namespace CrashCapture {
 
     static void ManualDumpHandler(int sig, siginfo_t* info, void* ucontext)
     {
+        Log::Panic();
         int self = gettid_();
         if (g_gameThreadTid && self == g_gameThreadTid) {
             if (!g_inReport) {
@@ -592,6 +599,7 @@ namespace CrashCapture {
                    g_oldUsr1.sa_handler != SIG_DFL) {
             g_oldUsr1.sa_handler(sig);
         }
+        Log::ClearPanic();
     }
 
     int Platform::RequestLuaBreak()

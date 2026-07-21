@@ -14,6 +14,7 @@
     #include <windows.h>
 #else
     #include <unistd.h>
+    #include <fcntl.h>
     #include <sys/stat.h>
     #include <sys/types.h>
     #include <dirent.h>
@@ -62,9 +63,61 @@ namespace CrashCapture {
                 y, m, d, sec / 3600, (sec / 60) % 60, sec % 60);
     }
 
-    static int EnvInt(const char* name, int def)
+    static const char* CmdlineLookup(const char* name)
+    {
+        static char buf[8192];
+        static char val[512];
+        char* toks[256];
+        int nt = 0;
+
+        #if defined(CC_WINDOWS)
+            const char* cl = GetCommandLineA();
+            if (!cl) return NULL;
+            snprintf(buf, sizeof(buf), "%s", cl);
+            char* p = buf; // tokenize in place, honoring double quotes
+            while (*p && nt < 256) {
+                while (*p == ' ' || *p == '\t') ++p;
+                if (!*p) break;
+                char* start;
+                if (*p == '"') { ++p; start = p; while (*p && *p != '"') ++p; }
+                else           { start = p; while (*p && *p != ' ' && *p != '\t') ++p; }
+                if (*p) *p++ = 0;
+                toks[nt++] = start;
+            }
+        #else
+            int fd = open("/proc/self/cmdline", O_RDONLY);
+            if (fd < 0) return NULL;
+            ssize_t n = read(fd, buf, sizeof(buf) - 1);
+            close(fd);
+            if (n <= 0) return NULL;
+            buf[n] = 0;
+            char* p = buf; char* end = buf + n; // argv are NUL-separated
+            while (p < end && nt < 256) { toks[nt++] = p; p += strlen(p) + 1; }
+        #endif
+
+        for (int i = 0; i < nt; ++i) {
+            const char* t = toks[i];
+            if ((t[0] == '-' || t[0] == '+') && strcmp(t + 1, name) == 0) {
+                if (i + 1 < nt && toks[i + 1][0] != '-' && toks[i + 1][0] != '+') {
+                    snprintf(val, sizeof(val), "%s", toks[i + 1]);
+                    return val;
+                }
+                return "1";
+            }
+        }
+        return NULL;
+    }
+
+    static const char* CfgRaw(const char* name)
     {
         const char* v = getenv(name);
+        if (v && *v) return v;
+        return CmdlineLookup(name);
+    }
+
+    static int EnvInt(const char* name, int def)
+    {
+        const char* v = CfgRaw(name);
         if (!v || !*v) return def;
         return atoi(v);
     }
@@ -105,12 +158,12 @@ namespace CrashCapture {
         c.frame_profile = EnvInt("CRASHCAPTURE_FRAME_PROFILE", 1) != 0;
 
         // store crashes in <gmod-root>/crashes
-        const char* dir = getenv("CRASHCAPTURE_DIR");
+        const char* dir = CfgRaw("CRASHCAPTURE_DIR");
         if (!dir || !*dir) dir = "crashes";
         snprintf(c.dir, sizeof(c.dir), "%s", dir);
 
         // optional Lua script for live memory diagnostics on a crash
-        const char* script = getenv("CRASHCAPTURE_SCRIPT");
+        const char* script = CfgRaw("CRASHCAPTURE_SCRIPT");
         snprintf(c.script, sizeof(c.script), "%s", script ? script : "");
 
         #if defined(CC_WINDOWS)
@@ -185,7 +238,7 @@ namespace CrashCapture {
         if (g_initialized) return;
 
         {
-            const char* dis = getenv("CRASHCAPTURE_DISABLE");
+            const char* dis = CfgRaw("CRASHCAPTURE_DISABLE");
             if (dis && atoi(dis) != 0) { g_initialized = true; return; }
         }
 
@@ -199,7 +252,7 @@ namespace CrashCapture {
         bool deferArm = false;
         #if defined(CC_WINDOWS) && defined(INTERFACE_PRELOAD)
             deferArm = Cfg().window_watchdog && Cfg().timeout_sec > 0;
-            if (deferArm && !getenv("CRASHCAPTURE_FIRSTCHANCE"))
+            if (deferArm && !CfgRaw("CRASHCAPTURE_FIRSTCHANCE"))
                 Cfg().firstchance = true;
         #endif
         if (deferArm) {
@@ -215,13 +268,10 @@ namespace CrashCapture {
     // Resolve modules + Lua, install handlers, print the armed banner.
     void InstallHandlers()
     {
-        if (Cfg().console) Log::EnableConsole();
-
         Modules::Refresh();
         Lua::RefreshStates();
         Platform::Install();
-
-        // Armed banner with the absolute report dir (resolves cwd ambiguity).
+        
         #if defined(CC_WINDOWS)
             char abdir[1024] = {0};
             if (!GetFullPathNameA(Cfg().dir, sizeof(abdir), abdir, NULL))
@@ -234,8 +284,11 @@ namespace CrashCapture {
                 else snprintf(abdir, sizeof(abdir), "%s", Cfg().dir);
             }
         #endif
-        Log::F("CrashCapture - v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_SIDE " - " __TIME__ " " __DATE__
-            "\nreports -> %s\n", abdir);
+
+        #if defined(CC_SERVER)
+            Log::F("CrashCapture - v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_SIDE " - " __TIME__ " " __DATE__
+                "\nreports -> %s\n", abdir);
+        #endif
 
         #ifndef INTERFACE_PLUGIN
             Lua::InstallSideloadBootstrap();
@@ -254,6 +307,7 @@ namespace CrashCapture {
     void Pulse()
     {
         Watchdog::Pulse();
+        Log::PumpConsole();
         #if defined(CC_LINUX) // TODO: windows at some point.
             Phys::Recover::PollGameThread();
         #endif

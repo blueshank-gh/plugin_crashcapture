@@ -52,6 +52,158 @@ namespace CrashCapture::Log {
         #endif
     }
 
+    #if defined(CC_LINUX)
+        static bool StderrIsTty()
+        {
+            static int cached = -1;
+            if (cached < 0) cached = isatty(2) ? 1 : 0;
+            return cached != 0;
+        }
+    #endif
+
+    static void WriteStderrLine(const char* s, size_t len)
+    {
+        #if defined(CC_LINUX)
+            static const char kWm[] = "[Crash Capture]";
+            const size_t wmLen = sizeof(kWm) - 1;
+            if (StderrIsTty() && len >= wmLen && memcmp(s, kWm, wmLen) == 0) {
+                static const char col[] = "\x1b[97m[\x1b[91mCrash Capture\x1b[97m]\x1b[0m";
+                WriteStderr(col, sizeof(col) - 1);
+                WriteStderr(s + wmLen, len - wmLen);
+                return;
+            }
+        #endif
+        WriteStderr(s, len);
+    }
+
+    // --------- engine console ---
+
+    struct CCColor { unsigned char r, g, b, a; };
+    typedef void (*Fn_EngineMsg)(const char* fmt, ...);
+    typedef void (*Fn_EngineMsgC)(const CCColor* clr, const char* fmt, ...);
+
+    static Fn_EngineMsg g_engineMsg = NULL;
+    static Fn_EngineMsgC g_engineMsgC = NULL;
+    static uint64_t g_sinkNextTryMs = 0;
+    static volatile int g_panic = 0;
+
+    void Panic() { g_panic = 1; }
+    void ClearPanic() { g_panic = 0; }
+
+    static void TryResolveEngineSink()
+    {
+        if (g_engineMsg) return;
+        uint64_t now = MonotonicMs();
+        if (now < g_sinkNextTryMs) return;
+        g_sinkNextTryMs = now + 5000;
+
+        uintptr_t msg = Sym::Lookup("tier0", "Msg");
+        if (!msg) return;
+        #if defined(CC_WINDOWS) && defined(CC_X64)
+            uintptr_t msgc = Sym::Lookup("tier0", "?ConColorMsg@@YAXAEBVColor@@PEBDZZ");
+        #elif defined(CC_WINDOWS)
+            uintptr_t msgc = Sym::Lookup("tier0", "?ConColorMsg@@YAXABVColor@@PBDZZ");
+        #else
+            uintptr_t msgc = Sym::Lookup("tier0", "_Z11ConColorMsgRK5ColorPKcz");
+        #endif
+        g_engineMsgC = (Fn_EngineMsgC)msgc;
+        g_engineMsg = (Fn_EngineMsg)msg;
+    }
+
+    static bool EngineSinkReady()
+    {
+        return g_engineMsg && !g_panic && Platform::IsGameThread();
+    }
+
+    void Watermark()
+    {
+        static const CCColor white = {255, 255, 255, 255};
+        static const CCColor red   = {235,  70,  70, 255};
+        if (g_engineMsgC) {
+            g_engineMsgC(&white, "[");
+            g_engineMsgC(&red, "Crash Capture");
+            g_engineMsgC(&white, "]");
+        } else if (g_engineMsg) {
+            g_engineMsg("[Crash Capture]");
+        }
+    }
+
+    static void EngineEmit(const char* s, size_t len)
+    {
+        static const char kWm[] = "[Crash Capture]";
+        const size_t wmLen = sizeof(kWm) - 1;
+        if (g_engineMsgC && len >= wmLen && memcmp(s, kWm, wmLen) == 0) {
+            Watermark();
+            s += wmLen;
+            len -= wmLen;
+        }
+        while (len) {
+            char buf[1024];
+            size_t k = len < sizeof(buf) - 1 ? len : sizeof(buf) - 1;
+            memcpy(buf, s, k);
+            buf[k] = 0;
+            g_engineMsg("%s", buf);
+            s += k;
+            len -= k;
+        }
+    }
+
+    static char g_conQueue[4096];
+    static size_t g_conQueueLen = 0;
+    #if defined(CC_WINDOWS)
+        static volatile LONG g_qLock = 0;
+        static void QLock() { while (InterlockedExchange(&g_qLock, 1)) Sleep(0); }
+        static void QUnlock() { InterlockedExchange(&g_qLock, 0); }
+    #else
+        static volatile int g_qLock = 0;
+        static void QLock() { while (__sync_lock_test_and_set(&g_qLock, 1)) usleep(0); }
+        static void QUnlock() { __sync_lock_release(&g_qLock); }
+    #endif
+
+    static void QueueAppend(const char* s, size_t len)
+    {
+        QLock();
+        if (g_conQueueLen + len <= sizeof(g_conQueue)) {
+            memcpy(g_conQueue + g_conQueueLen, s, len);
+            g_conQueueLen += len;
+        }
+        QUnlock();
+    }
+
+    void PumpConsole()
+    {
+        TryResolveEngineSink();
+        if (!EngineSinkReady() || !g_conQueueLen) return;
+
+        char local[sizeof(g_conQueue)];
+        QLock();
+        size_t n = g_conQueueLen;
+        memcpy(local, g_conQueue, n);
+        g_conQueueLen = 0;
+        QUnlock();
+
+        size_t i = 0;
+        while (i < n) {
+            size_t j = i;
+            while (j < n && local[j] != '\n') ++j;
+            if (j < n) ++j;
+            EngineEmit(local + i, j - i);
+            i = j;
+        }
+    }
+
+    static void ConsoleOut(const char* s, size_t len, bool queueable)
+    {
+        TryResolveEngineSink();
+        if (EngineSinkReady()) { EngineEmit(s, len); return; }
+        WriteStderrLine(s, len);
+        #if !defined(INTERFACE_PLUGIN)
+            if (queueable && !g_panic) QueueAppend(s, len);
+        #else
+            (void)queueable;
+        #endif
+    }
+
     void Raw(const char* s, size_t len)
     {
         if (!s || !len) return;
@@ -75,7 +227,7 @@ namespace CrashCapture::Log {
             }
         #endif
         if (!IsOpen() || Cfg().console)
-            WriteStderr(s, len);
+            ConsoleOut(s, len, !IsOpen());
     }
 
     // just a concise console banner, never written to the .md
@@ -91,7 +243,7 @@ namespace CrashCapture::Log {
         #if defined(CC_WINDOWS)
             OutputDebugStringA(buf);
         #endif
-        WriteStderr(buf, (size_t)len);
+        ConsoleOut(buf, (size_t)len, true);
     }
 
     static bool g_debug = false;
@@ -110,7 +262,7 @@ namespace CrashCapture::Log {
         #if defined(CC_WINDOWS)
             OutputDebugStringA(buf);
         #endif
-        WriteStderr(buf, (size_t)len);
+        ConsoleOut(buf, (size_t)len, false);
     }
 
     void Str(const char* s)
@@ -153,21 +305,6 @@ namespace CrashCapture::Log {
     #else
         if (g_file >= 0) fsync(g_file);
     #endif
-    }
-
-    void EnableConsole()
-    {
-        #if defined(CC_WINDOWS)
-            static bool done = false;
-            if (done) return;
-            done = true;
-            if (AllocConsole()) {
-                SetConsoleTitleA("plugin_crashcapture");
-                FILE* f = NULL;
-                freopen_s(&f, "CONOUT$", "w", stdout);
-                freopen_s(&f, "CONOUT$", "w", stderr);
-            }
-        #endif
     }
 
     // 16 bytes/line "base+off  hex  ascii".

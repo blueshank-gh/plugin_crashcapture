@@ -325,6 +325,7 @@ namespace CrashCapture {
     {
         if (InterlockedCompareExchange(&g_inReport, 1, 0) != 0)
             return EXCEPTION_CONTINUE_SEARCH;
+        Log::Panic();
 
         uintptr_t pc = ep && ep->ExceptionRecord ? (uintptr_t)ep->ExceptionRecord->ExceptionAddress : 0;
         uint64_t now = MonotonicMs();
@@ -345,6 +346,7 @@ namespace CrashCapture {
         }
         
         // TODO: windows needs physics-fault resume but this is a low priority.
+        if (firstChance) Log::ClearPanic();
         InterlockedExchange(&g_inReport, 0);
         return EXCEPTION_CONTINUE_SEARCH; // let WER / the runtime finish the crash
     }

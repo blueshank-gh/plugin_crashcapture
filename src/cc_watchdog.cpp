@@ -4,6 +4,7 @@
 
 #include "crashcapture.h"
 #include "features/cc_physrecover.h"
+#include "features/cc_engine.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -64,6 +65,24 @@ namespace CrashCapture {
                 g_gameThreadPthread = (unsigned long)pthread_self();
                 g_gameThreadTid = (int)syscall(SYS_gettid);
             #endif
+
+            #if defined(CC_CLIENT)
+                #if defined(CC_WINDOWS)
+                    char abdir[1024] = {0};
+                    if (!GetFullPathNameA(Cfg().dir, sizeof(abdir), abdir, NULL))
+                        snprintf(abdir, sizeof(abdir), "%s", Cfg().dir);
+                #else
+                    char abdir[1024] = {0};
+                    {
+                        char cwd[1024] = {0};
+                        if (getcwd(cwd, sizeof(cwd))) snprintf(abdir, sizeof(abdir), "%s/%s", cwd, Cfg().dir);
+                        else snprintf(abdir, sizeof(abdir), "%s", Cfg().dir);
+                    }
+                #endif
+                Log::F("[Crash Capture] v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_SIDE " - " __TIME__ " " __DATE__
+                    "\nreports -> %s\n", abdir);
+            #endif
+
             Log::F("[Crash Capture] heartbeat bound to game thread (id=%llu)\n",
             #if defined(CC_WINDOWS)
                    (unsigned long long)g_gameThreadId);
@@ -326,6 +345,7 @@ namespace CrashCapture {
             if (timeout <= 0) continue;
 
             uint64_t now = MonotonicMs();
+            if (Engine::IsLoading() == 1) Grace(10);
 
             if (g_graceUntilMs && g_lastPulseMs && g_lastPulseMs != g_graceAnchorPulse &&
                 now - g_lastPulseMs < (uint64_t)timeout * 1000ull)

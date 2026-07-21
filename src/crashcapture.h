@@ -28,8 +28,10 @@
 // INTERFACE_PLUGIN -> server plugin (IGMODSERVERPLUGINCALLBACKS004), gets GameFrame.
 // INTERFACE_PRELOAD -> client preload (version.dll mimic / .so), crash-only.
 #ifdef INTERFACE_PLUGIN
+    #define CC_SERVER 1
     #define CC_SIDE "server"
 #else
+    #define CC_CLIENT 1
     #define CC_SIDE "client"
 #endif
 
@@ -95,7 +97,10 @@ namespace CrashCapture {
         void CloseFence();
         void Flush();
         void HexDump(const void* p, size_t n, uintptr_t labelBase);
-        void EnableConsole();
+        void Watermark();
+        void PumpConsole();
+        void Panic();
+        void ClearPanic();
         void AppendNote(const char* path, const char* text); // append to an already-closed report
     }
 

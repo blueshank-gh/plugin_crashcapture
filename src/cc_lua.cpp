@@ -779,6 +779,7 @@ namespace CrashCapture {
     static int cc_lua_pulse(lua_State*)
     {
         Watchdog::Pulse();
+        Log::PumpConsole();
         if (!g_moduleLoad) Lua::EnsureApi();
         Lua::PollRecovery();
         Lua::PollReady();

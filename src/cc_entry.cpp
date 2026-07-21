@@ -98,7 +98,7 @@ public:
         // TODO: we need to switch off of this for plugins, its unreliable.
         if ((++m_frame & 15) == 0) CrashCapture::Lua::EnsureApi();
     }
-    void          LevelShutdown(void) override { CrashCapture::Grace(60); }
+    void          LevelShutdown(void) override { CrashCapture::Grace(30); }
     void          ClientActive(edict_t*) override {}
     void          ClientDisconnect(edict_t*) override {}
     void          ClientPutInServer(edict_t*, const char*) override {}

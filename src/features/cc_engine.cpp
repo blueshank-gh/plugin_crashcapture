@@ -42,6 +42,14 @@ namespace CrashCapture {
             {"engine.host_runframe", "engine", NULL,
                 "55 8B EC 83 EC 10 80 3D ?? ?? ?? ?? 00 75 6A 83 3D ?? ?? ?? ?? 02 7C 61 83 3D ?? ?? ?? ?? 06",
                 {{CC_STEP_END, 0, 0}}},
+            // &scr_drawloading - cmp scr_drawloading, 0 / jz / call OnLevelLoadingFinished / mov 0 / jmp / mov 1
+            {"engine.loading_byte", "engine", NULL,
+                "80 3D ?? ?? ?? ?? 00 74 15 E8 ?? ?? ?? ?? C6 05 ?? ?? ?? ?? 00 EB 07 C6 05 ?? ?? ?? ?? 01",
+                {{CC_STEP_ABS32, 2, 0}, {CC_STEP_END, 0, 0}}},
+            // CBaseClientState::SetSignonState Range-guard cmp edi, 7 + cmp edi,[esi+13Ch]
+            {"client.setsignon", "engine", NULL,
+                "55 8B EC 56 57 8B 7D 08 8B F1 83 FF 07 0F 87 ?? ?? ?? ?? 83 FF 02 7E ?? 3B BE 3C 01 00 00",
+                {{CC_STEP_END, 0, 0}}},
         #elif defined(CC_WINDOWS) && defined(CC_X64)
             // sig ends past `mov cl, 1` (B1 01) to skip the non-fatal twin.
             {"engine.sys_error", "engine", NULL,
@@ -49,6 +57,14 @@ namespace CrashCapture {
                 {{CC_STEP_END, 0, 0}}},
             {"engine.host_runframe", "engine", NULL,
                 "48 83 EC 48 80 3D ?? ?? ?? ?? 00 0F 29 7C 24 20 0F 28 F8 48 89 5C 24 40 75 6D 83 3D ?? ?? ?? ?? 02",
+                {{CC_STEP_END, 0, 0}}},
+            // &scr_drawloading
+            {"engine.loading_byte", "engine", NULL,
+                "40 38 35 ?? ?? ?? ?? 74 15 E8 ?? ?? ?? ?? 40 88 35 ?? ?? ?? ?? EB 07 C6 05 ?? ?? ?? ?? 01",
+                {{CC_STEP_REL, 3, 7}, {CC_STEP_END, 0, 0}}},
+            // CBaseClientState::SetSignonState cmp edx,7 range-guard + cmp edx,[rcx+15Ch]
+            {"client.setsignon", "engine", NULL,
+                "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 41 8B F0 8B FA 48 8B D9 83 FA 07 0F 87 ?? ?? ?? ?? 83 FA 02 7E ?? 3B 91 5C 01 00 00",
                 {{CC_STEP_END, 0, 0}}},
         #endif
     };
@@ -88,6 +104,7 @@ namespace CrashCapture {
         vsnprintf(text, sizeof(text), fmt ? fmt : "Sys_Error", ap);
         va_end(ap);
 
+        Log::Panic();
         Platform::DumpThread("engine error", text);
 
         if (o_syserror) o_syserror("%s", text);
@@ -158,6 +175,65 @@ namespace CrashCapture {
         Log::F("- **frames sampled** : %llu\n", (unsigned long long)s.frames);
     }
 
+    // --- loading state ---
+
+    #if defined(CC_WINDOWS)
+        enum { SIGNON_NONE = 0, SIGNON_FULL = 6 };
+        #if defined(CC_X64)
+            static const int kSignonOff = 0x15C;
+            typedef char (*Fn_setsignon)(void* self, int64_t state, uint32_t spawn);
+        #else
+            static const int kSignonOff = 0x13C;
+            typedef char (__fastcall *Fn_setsignon)(void* self, void* edx, int state, int spawn);
+        #endif
+        static Fn_setsignon o_setsignon = 0;
+        static void* g_setsignonTarget = 0;
+        static bool g_signonHooked = false;
+        static volatile int g_signonState = -1; // -1 = no transition seen yet
+
+        static void NoteSignon(void* self)
+        {
+            uintptr_t p = (uintptr_t)self + kSignonOff;
+            if (self && Mem::IsReadable((void*)p, sizeof(int))) {
+                int s = *(int*)p;
+                if (s >= 0 && s <= 7) g_signonState = s;
+            }
+        }
+
+        #if defined(CC_X64)
+            static char h_setsignon(void* self, int64_t state, uint32_t spawn)
+            {
+                char r = o_setsignon(self, state, spawn);
+                NoteSignon(self);
+                return r;
+            }
+        #else
+            static char __fastcall h_setsignon(void* self, void* edx, int state, int spawn)
+            {
+                char r = o_setsignon(self, edx, state, spawn);
+                NoteSignon(self);
+                return r;
+            }
+        #endif
+    #endif
+
+    int Engine::IsLoading()
+    {
+        #if defined(CC_WINDOWS)
+            if (g_signonHooked) {
+                int s = g_signonState;
+                if (s >= 0 && s != SIGNON_NONE && s != SIGNON_FULL) return 1;
+            }
+        #endif
+        uintptr_t a = Sig::Get("engine.loading_byte");
+        if (a && Mem::IsReadable((void*)a, 1))
+            return *(volatile unsigned char*)a ? 1 : 0;
+        #if defined(CC_WINDOWS)
+            if (g_signonHooked) return 0;
+        #endif
+        return -1;
+    }
+
     // --- install / uninstall ---
 
     bool Engine::InstallHooks()
@@ -175,6 +251,14 @@ namespace CrashCapture {
             if (ok) { g_hostFrameTarget = (void*)a; g_frameHooked = true; any = true; }
             Log::Debug("[CC-ENGINE] host_runframe: sig=%p hooked=%d\n", (void*)a, (int)ok);
         }
+        #if defined(CC_WINDOWS) && !defined(INTERFACE_PLUGIN)
+            if (!g_signonHooked) {
+                uintptr_t a = Sig::Get("client.setsignon");
+                bool ok = a && Hook::Install((void*)a, (void*)h_setsignon, (void**)&o_setsignon);
+                if (ok) { g_setsignonTarget = (void*)a; g_signonHooked = true; any = true; }
+                Log::Debug("[CC-ENGINE] setsignon: sig=%p hooked=%d\n", (void*)a, (int)ok);
+            }
+        #endif
         return any;
     }
 
@@ -182,6 +266,10 @@ namespace CrashCapture {
     {
         if (g_sysErrHooked && g_sysErrorTarget) Hook::Uninstall(g_sysErrorTarget);
         if (g_frameHooked && g_hostFrameTarget) Hook::Uninstall(g_hostFrameTarget);
+        #if defined(CC_WINDOWS)
+            if (g_signonHooked && g_setsignonTarget) Hook::Uninstall(g_setsignonTarget);
+            o_setsignon = 0; g_setsignonTarget = 0; g_signonHooked = false;
+        #endif
         o_syserror = 0; o_hostframe = 0;
         g_sysErrorTarget = 0; g_hostFrameTarget = 0;
         g_sysErrHooked = false; g_frameHooked = false;

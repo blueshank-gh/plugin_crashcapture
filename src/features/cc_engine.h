@@ -16,5 +16,6 @@ namespace CrashCapture {
         void Uninstall();
         bool FrameStats(EngineFrameStats* out);
         void ReportFrameProfile();
+        int IsLoading();
     }
 }
