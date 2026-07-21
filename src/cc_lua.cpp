@@ -3,6 +3,9 @@
 
 #include "crashcapture.h"
 
+#include "features/cc_engine.h"
+#include "tools/cc_hooking.h"
+
 #include "glua/LuaShared.h"
 #include "glua/LuaInterface.h"
 
@@ -34,6 +37,7 @@ namespace CrashCapture {
     static bool g_readyPending[3] = { false, false, false }; // crashcapture.ready hook owed to this realm
     static bool g_readyFired[3] = { false, false, false }; // crashcapture.ready hook already fired for this realm
     static void* g_apiState[3] = { NULL, NULL, NULL }; // lua_State each was installed on
+    static bool g_moduleLoad = false; // gmod13_open (gmsv/gmcl require) -> stay on that one realm
 
     // lua_Debug must match LuaJIT's layout byte-for-byte
     // this better not change... ever...
@@ -125,7 +129,7 @@ namespace CrashCapture {
     #endif
 
     // Handle to the loaded lua_shared for symbol lookup. Resolved at arm time.
-    void* Lua_SharedHandle()
+    void* Lua::SharedHandle()
     {
     #if defined(CC_WINDOWS)
         HMODULE h = GetModuleHandleA("lua_shared.dll");
@@ -146,7 +150,7 @@ namespace CrashCapture {
     #endif
     }
 
-    void* Lua_Sym(void* mod, const char* n)
+    void* Lua::Sym(void* mod, const char* n)
     {
     #if defined(CC_WINDOWS)
         return mod ? (void*)GetProcAddress((HMODULE)mod, n) : NULL;
@@ -155,10 +159,10 @@ namespace CrashCapture {
     #endif
     }
 
-    static void Lua_ResolveApi()
+    static void ResolveLuaApi()
     {
         if (g_api.ok) return;
-        void* m = Lua_SharedHandle();
+        void* m = Lua::SharedHandle();
         if (!m) { g_apiDiag = "lua_shared handle not found"; return; }
 
         // Resolve each symbol, on the first miss, record its name for the report.
@@ -179,22 +183,22 @@ namespace CrashCapture {
         };
         bool all = true;
         for (size_t i = 0; i < sizeof(syms)/sizeof(syms[0]); ++i) {
-            *syms[i].slot = Lua_Sym(m, syms[i].name);
+            *syms[i].slot = Lua::Sym(m, syms[i].name);
             if (!*syms[i].slot && all) { g_apiDiag = syms[i].name; all = false; }
         }
         g_api.ok = all;
         if (all) g_apiDiag = "ok";
 
         // specific for the crash capture API
-        g_api.pushnil = (void(*)(lua_State*)) Lua_Sym(m, "lua_pushnil");
-        g_api.pushnumber = (void(*)(lua_State*, double)) Lua_Sym(m, "lua_pushnumber");
-        g_api.pushboolean = (void(*)(lua_State*, int)) Lua_Sym(m, "lua_pushboolean");
-        g_api.pushstring = (void(*)(lua_State*, const char*)) Lua_Sym(m, "lua_pushstring");
+        g_api.pushnil = (void(*)(lua_State*)) Lua::Sym(m, "lua_pushnil");
+        g_api.pushnumber = (void(*)(lua_State*, double)) Lua::Sym(m, "lua_pushnumber");
+        g_api.pushboolean = (void(*)(lua_State*, int)) Lua::Sym(m, "lua_pushboolean");
+        g_api.pushstring = (void(*)(lua_State*, const char*)) Lua::Sym(m, "lua_pushstring");
         g_api.push_ok = g_api.pushnil && g_api.pushnumber && g_api.pushboolean && g_api.pushstring;
 
         // loop-break: set a count hook that raises an error out of the running VM.
-        g_api.sethook = (int(*)(lua_State*, cc_lua_Hook, int, int)) Lua_Sym(m, "lua_sethook");
-        g_api.error = (int(*)(lua_State*)) Lua_Sym(m, "lua_error");
+        g_api.sethook = (int(*)(lua_State*, cc_lua_Hook, int, int)) Lua::Sym(m, "lua_sethook");
+        g_api.error = (int(*)(lua_State*)) Lua::Sym(m, "lua_error");
         g_api.hook_ok = g_api.sethook && g_api.error && g_api.pushstring;
     }
 
@@ -213,16 +217,18 @@ namespace CrashCapture {
         return -1;
     }
 
-    void Lua_OnInit(void* iface)
+    void Lua::MarkModuleLoad() { g_moduleLoad = true; }
+
+    void Lua::OnInit(void* iface)
     {
         ILuaInterface* l = (ILuaInterface*)iface;
         int r = RealmOf(l);
         if (r >= 0) g_realm[r] = l;
-        Lua_InstallApi(iface);
-        Lua_InstallHeartbeat(iface);
+        Lua::InstallApi(iface);
+        Lua::InstallHeartbeat(iface);
     }
 
-    void Lua_OnShutdown(void* iface)
+    void Lua::OnShutdown(void* iface)
     {
         for (int i = 0; i < 3; ++i)
             if (g_realm[i] == iface) {
@@ -235,7 +241,7 @@ namespace CrashCapture {
             }
     }
 
-    bool Lua_HasBoundRealms()
+    bool Lua::HasBoundRealms()
     {
         for (int i = 0; i < 3; ++i) if (g_realm[i]) return true;
         return false;
@@ -243,13 +249,13 @@ namespace CrashCapture {
 
     static CreateInterfaceFn ResolveLuaSharedFactory()
     {
-        void* h = Lua_SharedHandle();
-        return h ? (CreateInterfaceFn)Lua_Sym(h, "CreateInterface") : NULL;
+        void* h = Lua::SharedHandle();
+        return h ? (CreateInterfaceFn)Lua::Sym(h, "CreateInterface") : NULL;
     }
 
-    void Lua_RefreshStates()
+    void Lua::RefreshStates()
     {
-        Lua_ResolveApi();
+        ResolveLuaApi();
         if (!g_shared) {
             CreateInterfaceFn ci = ResolveLuaSharedFactory();
             if (ci) g_shared = (ILuaShared*)ci(GMOD_LUASHARED_INTERFACE, NULL);
@@ -266,7 +272,7 @@ namespace CrashCapture {
     {
         if (!g_api.touserdata) return -1;
         unsigned char* ud = (unsigned char*)g_api.touserdata(L, idx);
-        if (!ud || !Mem_IsReadable(ud, sizeof(void*) + 1)) return -1;
+        if (!ud || !Mem::IsReadable(ud, sizeof(void*) + 1)) return -1;
         return ud[sizeof(void*)];
     }
 
@@ -312,7 +318,7 @@ namespace CrashCapture {
 
     static bool LocalsReadable(lua_State* L)
     {
-        return Platform_IsGameThread() && g_api.gettop(L) >= 0;
+        return Platform::IsGameThread() && g_api.gettop(L) >= 0;
     }
 
     struct FrameCtx { lua_State* L; int level; bool more; };
@@ -376,12 +382,12 @@ namespace CrashCapture {
                 g_apiDiag ? g_apiDiag : "?");
             return;
         }
-        if (!Mem_IsReadable(l, 2 * sizeof(void*))) {
+        if (!Mem::IsReadable(l, 2 * sizeof(void*))) {
             Log::Str("\n_interface not readable; skipping stack walk._\n");
             return;
         }
         lua_State* L = l->GetState();
-        if (!L || !Mem_IsReadable(L, sizeof(void*))) {
+        if (!L || !Mem::IsReadable(L, sizeof(void*))) {
             Log::Str("\n_lua_State not readable; skipping stack walk._\n");
             return;
         }
@@ -394,7 +400,7 @@ namespace CrashCapture {
         }
 
         Log::Str("\n**call stack** (frame -- source:line -- name -- locals)\n\n");
-        if (!Platform_IsGameThread())
+        if (!Platform::IsGameThread())
             Log::Str("_locals omitted: the VM belongs to another thread._\n\n");
         Log::OpenFence();
         int frames = 0, faults = 0;
@@ -420,15 +426,15 @@ namespace CrashCapture {
         Log::CloseFence();
     }
 
-    void Lua_Dump()
+    void Lua::Dump()
     {
-        Lua_RefreshStates();
+        Lua::RefreshStates();
 
         bool any = false;
         for (int r = 0; r < 3; ++r) {
             ILuaInterface* l = g_realm[r];
             if (!l) continue;
-            if (!Mem_IsReadable(l, sizeof(void*))) continue;
+            if (!Mem::IsReadable(l, sizeof(void*))) continue;
             any = true;
             DumpRealm(r, l);
         }
@@ -473,19 +479,19 @@ namespace CrashCapture {
         }
     }
 
-    int Lua_CaptureTraces(CCLuaTrace* out, int maxRealms)
+    int Lua::CaptureTraces(CCLuaTrace* out, int maxRealms)
     {
         if (!out || maxRealms <= 0) return 0;
-        Lua_RefreshStates();
+        Lua::RefreshStates();
         if (!g_api.ok) return 0;
 
         int rc = 0;
         const int maxFrames = (int)(sizeof(out[0].frames) / sizeof(out[0].frames[0]));
         for (int r = 0; r < 3 && rc < maxRealms; ++r) {
             ILuaInterface* l = g_realm[r];
-            if (!l || !Mem_IsReadable(l, 2 * sizeof(void*))) continue;
+            if (!l || !Mem::IsReadable(l, 2 * sizeof(void*))) continue;
             lua_State* L = l->GetState();
-            if (!L || !Mem_IsReadable(L, sizeof(void*))) continue;
+            if (!L || !Mem::IsReadable(L, sizeof(void*))) continue;
 
             CCLuaTrace* t = &out[rc];
             memset(t, 0, sizeof(*t));
@@ -530,7 +536,7 @@ namespace CrashCapture {
 
     static void RecStr(char* dst, size_t cap, const char* s) { snprintf(dst, cap, "%s", s ? s : ""); }
 
-    void Recovery_NotePhysResume(const char* stall, const char* report)
+    void Recovery::NotePhysResume(const char* stall, const char* report)
     {
         RecStr(g_recInfo.method, sizeof(g_recInfo.method), "physresume");
         RecStr(g_recInfo.stall,  sizeof(g_recInfo.stall),  stall ? stall : "physics");
@@ -542,7 +548,7 @@ namespace CrashCapture {
         g_recRecovery = 1;
     }
 
-    void Recovery_NotePhysResolve(const int* ents, int n, const char* report)
+    void Recovery::NotePhysResolve(const int* ents, int n, const char* report)
     {
         if (n < 0) n = 0;
         if (g_recResolveFired) { g_recInfo.entCount = 0; g_recResolveFired = 0; } // new window
@@ -562,7 +568,7 @@ namespace CrashCapture {
                     (int)g_recPhysresolveWait);
     }
 
-    void Recovery_NoteRecovered(const char* method, uint64_t downtimeMs, const char* stall, const char* reason, const char* report)
+    void Recovery::NoteRecovered(const char* method, uint64_t downtimeMs, const char* stall, const char* reason, const char* report)
     {
         RecStr(g_recInfo.method, sizeof(g_recInfo.method), method);
         RecStr(g_recInfo.stall,  sizeof(g_recInfo.stall),  stall);
@@ -611,8 +617,9 @@ namespace CrashCapture {
         L->Pop(2);
     }
 
-    void Lua_PollRecovery()
+    void Lua::PollRecovery()
     {
+        if (MonotonicMs() < g_graceUntilMs) return;
         int lb = g_recLoopbreak, pr = g_recPhysresume, rc = g_recRecovery;
 
         // hold physresolve for phys_resolve_delay real frames (see above)
@@ -626,13 +633,13 @@ namespace CrashCapture {
         g_recLoopbreak = g_recPhysresume = g_recRecovery = 0;
 
         RecoveryInfo info = g_recInfo;
-        Lua_RefreshStates();
+        Lua::RefreshStates();
         int fired = 0;
         for (int r = 0; r < 3; ++r) {
             ILuaInterface* l = g_realm[r];
-            if (!l || !Mem_IsReadable(l, 2 * sizeof(void*))) continue;
+            if (!l || !Mem::IsReadable(l, 2 * sizeof(void*))) continue;
             void* L = (void*)l->GetState();
-            if (!L || !Mem_IsReadable(L, sizeof(void*))) continue;
+            if (!L || !Mem::IsReadable(L, sizeof(void*))) continue;
             if (px) ++fired;
             if (lb) FireRecoveryHook(l, "crashcapture.loopbreak", info);
             if (pr) FireRecoveryHook(l, "crashcapture.physresume", info);
@@ -671,19 +678,21 @@ namespace CrashCapture {
         return true;
     }
 
-    void Lua_PollReady()
+    void Lua::PollReady()
     {
+        if (MonotonicMs() < g_graceUntilMs) return;
+
         bool pending = false;
         for (int r = 0; r < 3; ++r) if (g_readyPending[r]) { pending = true; break; }
         if (!pending) return;
 
-        Lua_RefreshStates();
+        Lua::RefreshStates();
         for (int r = 0; r < 3; ++r) {
             if (!g_readyPending[r]) continue;
             ILuaInterface* l = g_realm[r];
-            if (!l || !Mem_IsReadable(l, 2 * sizeof(void*))) continue;
+            if (!l || !Mem::IsReadable(l, 2 * sizeof(void*))) continue;
             void* L = (void*)l->GetState();
-            if (!L || !Mem_IsReadable(L, sizeof(void*))) continue;
+            if (!L || !Mem::IsReadable(L, sizeof(void*))) continue;
             if (FireReadyHook(l, r)) {
                 g_readyPending[r] = false;
                 g_readyFired[r] = true;
@@ -691,14 +700,14 @@ namespace CrashCapture {
         }
     }
 
-    static void Lua_DisarmBreakHook()
+    static void DisarmBreakHook()
     {
         if (!g_api.sethook) return;
         for (int r = 0; r < 3; ++r) {
             ILuaInterface* l = g_realm[r];
-            if (!l || !Mem_IsReadable(l, 2 * sizeof(void*))) continue;
+            if (!l || !Mem::IsReadable(l, 2 * sizeof(void*))) continue;
             lua_State* L = l->GetState();
-            if (!L || !Mem_IsReadable(L, sizeof(void*))) continue;
+            if (!L || !Mem::IsReadable(L, sizeof(void*))) continue;
             g_api.sethook(L, NULL, 0, 0);
         }
     }
@@ -706,7 +715,7 @@ namespace CrashCapture {
     static const char* g_breakMsg = "Crash Capture: interrupting a suspected infinite loop";
     static void cc_break_hook(lua_State* L, cc_lua_Debug* /*ar*/)
     {
-        if (!Mem_IsReadable(L, sizeof(void*))) { Lua_DisarmBreakHook(); return; }
+        if (!Mem::IsReadable(L, sizeof(void*))) { DisarmBreakHook(); return; }
         if (g_api.sethook) g_api.sethook(L, NULL, 0, 0);
 
         RecStr(g_recInfo.method, sizeof(g_recInfo.method), "loopbreak");
@@ -717,51 +726,51 @@ namespace CrashCapture {
         g_recInfo.stackCount = 0;
         g_recLoopbreak = 1;
 
-        if (!Mem_IsReadable(L, sizeof(void*))) return;
+        if (!Mem::IsReadable(L, sizeof(void*))) return;
         if (g_api.pushstring) g_api.pushstring(L, g_breakMsg);
         if (g_api.error) g_api.error(L);
     }
 
-    int Lua_ArmBreakHook()
+    int Lua::ArmBreakHook()
     {
         if (!g_api.hook_ok) return 0;
         int armed = 0;
         for (int r = 0; r < 3; ++r) {
             if (r == LuaState::MENU) continue;
             ILuaInterface* l = g_realm[r];
-            if (!l || !Mem_IsReadable(l, 2 * sizeof(void*))) continue;
+            if (!l || !Mem::IsReadable(l, 2 * sizeof(void*))) continue;
             lua_State* L = l->GetState();
-            if (!L || !Mem_IsReadable(L, sizeof(void*))) continue;
+            if (!L || !Mem::IsReadable(L, sizeof(void*))) continue;
             g_api.sethook(L, cc_break_hook, CC_LUA_MASKCOUNT, 1);
             ++armed;
         }
         return armed;
     }
 
-    bool Lua_BreakLoop(const char* msg)
+    bool Lua::BreakLoop(const char* msg)
     {
-        Lua_RefreshStates();
+        Lua::RefreshStates();
         if (msg && *msg) g_breakMsg = msg;
         if (!g_api.hook_ok) {
-            Log::Str("[CrashCapture] loop-break unavailable (lua_sethook/lua_error not resolved from lua_shared).\n");
+            Log::Str("[Crash Capture] loop-break unavailable (lua_sethook/lua_error not resolved from lua_shared).\n");
             return false;
         }
 
-        int routed = Platform_RequestLuaBreak();
+        int routed = Platform::RequestLuaBreak();
         if (routed >= 0) {
             if (routed)
-                Log::F("[CrashCapture] loop-break: armed count hook on %d realm(s) on the game thread.\n", routed);
+                Log::F("[Crash Capture] loop-break: armed count hook on %d realm(s) on the game thread.\n", routed);
             else
-                Log::Str("[CrashCapture] loop-break: game thread had no readable Lua realms.\n");
+                Log::Str("[Crash Capture] loop-break: game thread had no readable Lua realms.\n");
             return routed > 0;
         }
 
         // fallback if request break doesn't work...
-        int armed = Lua_ArmBreakHook();
+        int armed = Lua::ArmBreakHook();
         if (armed)
-            Log::F("[CrashCapture] loop-break: armed count hook on %d realm(s).\n", armed);
+            Log::F("[Crash Capture] loop-break: armed count hook on %d realm(s).\n", armed);
         else
-            Log::Str("[CrashCapture] loop-break: no readable Lua realms to hook.\n");
+            Log::Str("[Crash Capture] loop-break: no readable Lua realms to hook.\n");
         return armed > 0;
     }
 
@@ -769,13 +778,14 @@ namespace CrashCapture {
 
     static int cc_lua_pulse(lua_State*)
     {
-        Watchdog_Pulse();
-        Lua_PollRecovery();
-        Lua_PollReady();
+        Watchdog::Pulse();
+        if (!g_moduleLoad) Lua::EnsureApi();
+        Lua::PollRecovery();
+        Lua::PollReady();
         return 0;
     }
 
-    void Lua_InstallHeartbeat(void* iface)
+    void Lua::InstallHeartbeat(void* iface)
     {
         if (!Cfg().lua_heartbeat) return;
 
@@ -805,11 +815,11 @@ namespace CrashCapture {
         if (r >= 0) g_hbInstalled[r] = true;
     }
 
-    void Lua_InstallHeartbeatAll()
+    void Lua::InstallHeartbeatAll()
     {
-        Lua_RefreshStates();
+        Lua::RefreshStates();
         for (int r = 0; r < 3; ++r)
-            if (g_realm[r]) { Lua_InstallApi(g_realm[r]); Lua_InstallHeartbeat(g_realm[r]); }
+            if (g_realm[r]) { Lua::InstallApi(g_realm[r]); Lua::InstallHeartbeat(g_realm[r]); }
     }
 
     // --------- lua-api ---
@@ -830,6 +840,8 @@ namespace CrashCapture {
         t[n++] = {"phys_resolve_delay", CK_INT, &c.phys_resolve_delay, 0};
         t[n++] = {"phys_pin", CK_BOOL, &c.phys_pin, 0};
         t[n++] = {"debug", CK_BOOL, &c.debug, 0};
+        t[n++] = {"engine_error", CK_BOOL, &c.engine_error, 0};
+        t[n++] = {"frame_profile", CK_BOOL, &c.frame_profile, 0};
         t[n++] = {"report_debounce", CK_INT, &c.report_debounce_sec, 0};
         t[n++] = {"firstchance", CK_BOOL, &c.firstchance, 0};
         t[n++] = {"window_watchdog", CK_BOOL, &c.window_watchdog, 0};
@@ -860,7 +872,7 @@ namespace CrashCapture {
             Shutdown();
         } else {
             InstallHandlers();
-            if (Cfg().timeout_sec > 0) Watchdog_Start(false);
+            if (Cfg().timeout_sec > 0) Watchdog::Start(false);
         }
     }
 
@@ -891,9 +903,9 @@ namespace CrashCapture {
         }
 
         if (strcmp(key, "timeout") == 0) {
-            if (Cfg().timeout_sec > 0) Watchdog_Start(false);
+            if (Cfg().timeout_sec > 0) Watchdog::Start(false);
         } else if (strcmp(key, "lua_heartbeat") == 0) {
-            if (Cfg().lua_heartbeat) Lua_InstallHeartbeatAll();
+            if (Cfg().lua_heartbeat) Lua::InstallHeartbeatAll();
         }
 
         return 0;
@@ -936,27 +948,81 @@ namespace CrashCapture {
 
         int paused;
         if (g_api.gettop(L) < 1 || g_api.type(L, 1) == CC_LT_NIL) {
-            int cur = Platform_PhysPaused();
+            int cur = Platform::PhysPaused();
             paused = (cur == 1) ? 0 : 1;
         } else {
             paused = g_api.toboolean(L, 1) != 0;
         }
 
-        int applied = Platform_SetPhysPaused(paused);
+        int applied = Platform::SetPhysPaused(paused);
         g_api.pushboolean(L, applied ? 1 : 0);
 
-        int state = Platform_PhysPaused();
+        int state = Platform::PhysPaused();
         if (state < 0) g_api.pushnil(L); else g_api.pushboolean(L, state);
         return 2;
     }
 
     static int cc_lua_dump(lua_State* L)
     {
-        Platform_DumpThread("dump", "manual dump requested (LUA)");
+        Platform::DumpThread("dump", "manual dump requested (LUA)");
         return 0;
     }
 
-    void Lua_InstallApi(void* iface)
+    static ILuaInterface* IfaceForState(lua_State* L)
+    {
+        for (int r = 0; r < 3; ++r)
+            if (g_apiState[r] && g_apiState[r] == (void*)L) return g_realm[r];
+        return NULL;
+    }
+
+    static int cc_lua_frametime(lua_State* L)
+    {
+        EngineFrameStats s;
+        ILuaInterface* l = IfaceForState(L);
+        if (!l || !Engine::FrameStats(&s)) { if (g_api.push_ok) { g_api.pushnil(L); return 1; } return 0; }
+
+        l->CreateTable();
+        l->PushNumber(s.work_ms); l->SetField(-2, "work_ms");
+        l->PushNumber(s.sleep_ms); l->SetField(-2, "sleep_ms");
+        l->PushNumber(s.total_ms); l->SetField(-2, "total_ms");
+        l->PushNumber(s.load_pct); l->SetField(-2, "load_pct");
+        l->PushNumber(s.avg_work_ms); l->SetField(-2, "avg_work_ms");
+        l->PushNumber(s.avg_total_ms); l->SetField(-2, "avg_total_ms");
+        l->PushNumber((double)s.frames); l->SetField(-2, "frames");
+        return 1;
+    }
+
+    // --------- lua-bootstrap (sideload) ---
+    typedef int (*Fn_lua_pcall)(lua_State*, int, int, int);
+    static Fn_lua_pcall o_lua_pcall = 0;
+    static void* g_pcallTarget = 0;
+
+    static int h_lua_pcall(lua_State* L, int nargs, int nresults, int errfunc)
+    {
+        void* t = g_pcallTarget;
+        g_pcallTarget = 0;
+        if (t) CrashCapture::Hook::Uninstall(t);
+        Lua::EnsureApi();
+        return o_lua_pcall(L, nargs, nresults, errfunc);
+    }
+
+    bool Lua::InstallSideloadBootstrap()
+    {
+        if (g_pcallTarget) return true;
+        for (int r = 0; r < 3; ++r) if (g_apiInstalled[r]) return true;
+
+        void* mod = Lua::SharedHandle();
+        void* pcall = mod ? Lua::Sym(mod, "lua_pcall") : NULL;
+        if (!pcall) return false;
+
+        if (!CrashCapture::Hook::Install(pcall, (void*)h_lua_pcall, (void**)&o_lua_pcall))
+            return false;
+        g_pcallTarget = pcall;
+        Log::Str("[Crash Capture] sideload: armed one-shot lua_pcall bootstrap.\n");
+        return true;
+    }
+
+    void Lua::InstallApi(void* iface)
     {
         ILuaInterface* L = (ILuaInterface*)iface;
         if (!L) return;
@@ -979,6 +1045,12 @@ namespace CrashCapture {
             L->PushCFunction(cc_lua_pulse); L->SetField(-2, "pulse");
             L->PushCFunction(cc_lua_physpause); L->SetField(-2, "phys_pause");
             L->PushCFunction(cc_lua_dump); L->SetField(-2, "dump");
+            L->PushCFunction(cc_lua_frametime); L->SetField(-2, "frametime");
+            L->PushString(CC_VERSION); L->SetField(-2, "version");
+            L->PushString(CC_BUILD); L->SetField(-2, "build");
+            L->PushString(CC_OS); L->SetField(-2, "os");
+            L->PushString(CC_ARCH); L->SetField(-2, "arch");
+            L->PushString(CC_SIDE); L->SetField(-2, "side");
         L->SetField(-2, "crashcapture");
         L->Pop();
 
@@ -989,15 +1061,15 @@ namespace CrashCapture {
         }
     }
 
-    bool Lua_EnsureApi()
+    bool Lua::EnsureApi()
     {
-        Lua_RefreshStates();
+        Lua::RefreshStates();
         if (!g_shared) return false;
 
         bool serverReady = false;
         for (int r = 0; r < 3; ++r) {
             ILuaInterface* l = g_shared->GetLuaInterface((unsigned char)r);
-            if (!l || !Mem_IsReadable(l, 2 * sizeof(void*))) {
+            if (!l || !Mem::IsReadable(l, 2 * sizeof(void*))) {
                 g_realm[r] = NULL;
                 g_apiState[r] = NULL;
                 g_apiInstalled[r] = false;
@@ -1014,8 +1086,8 @@ namespace CrashCapture {
                 g_apiInstalled[r] = false;
                 g_hbInstalled[r] = false;
                 g_readyFired[r] = false;
-                Lua_InstallApi(l);
-                Lua_InstallHeartbeat(l);
+                Lua::InstallApi(l);
+                Lua::InstallHeartbeat(l);
             }
 
             if (r == LuaState::SERVER && g_apiInstalled[r]) serverReady = true;

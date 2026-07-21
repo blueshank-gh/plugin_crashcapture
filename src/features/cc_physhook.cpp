@@ -5,9 +5,9 @@
 
 #if defined(CC_LINUX)
 
-#include "cc_hooking.h"
-#include "cc_signature.h"
-#include "cc_physrecover.h"
+#include "tools/cc_hooking.h"
+#include "tools/cc_signature.h"
+#include "features/cc_physrecover.h"
 #include <time.h>
 #include <stdint.h>
 
@@ -42,9 +42,9 @@ namespace CrashCapture {
     #endif
     };
 
-    void PhysHook_Init()
+    void Phys::Bind::Init()
     {
-        Sig_Register(kHookTargets, (int)(sizeof(kHookTargets) / sizeof(kHookTargets[0])));
+        Sig::Register(kHookTargets, (int)(sizeof(kHookTargets) / sizeof(kHookTargets[0])));
     }
 
     // trampolines to the originals
@@ -101,7 +101,7 @@ namespace CrashCapture {
             if (!g_noted) {
                 g_noted = true;
                 ++g_lagEpisodes;
-                PhysRecover_NoteHookLag((uintptr_t)mindist); // -> offenders + one debounced report
+                Phys::Recover::NoteHookLag((uintptr_t)mindist); // -> offenders + one debounced report
             }
         }
         if (g_skip) return;
@@ -111,63 +111,63 @@ namespace CrashCapture {
     // do_impact / simulate_time_event: while skipping, don't resolve/reschedule either, this will break vphysics into garbage states
     static void h_di(void* mindist)
     {
-        if (g_skip) { PhysRecover_NoteHookLag((uintptr_t)mindist); return; }
+        if (g_skip) { Phys::Recover::NoteHookLag((uintptr_t)mindist); return; }
         o_di(mindist);
     }
     static void h_stev(void* mindist, void* env)
     {
-        if (g_skip) { PhysRecover_NoteHookLag((uintptr_t)mindist); return; }
+        if (g_skip) { Phys::Recover::NoteHookLag((uintptr_t)mindist); return; }
         o_stev(mindist, env);
     }
 
-    bool PhysHook_Install()
+    bool Phys::Bind::Install()
     {
         if (g_installed) return true;
         if (!Cfg().phys_hook) return false;
 
-        uintptr_t a_ste = Sig_Get("hook.simulate_time_events");
-        uintptr_t a_ue = Sig_Get("hook.update_exact");
-        uintptr_t a_di = Sig_Get("hook.do_impact");
-        uintptr_t a_stev = Sig_Get("hook.simulate_time_event");
+        uintptr_t a_ste = Sig::Get("hook.simulate_time_events");
+        uintptr_t a_ue = Sig::Get("hook.update_exact");
+        uintptr_t a_di = Sig::Get("hook.do_impact");
+        uintptr_t a_stev = Sig::Get("hook.simulate_time_event");
         if (!a_ste || !a_ue) {
             return false; // this... shouldn't happen, vphysics didn't load yet.
         }
 
-        bool okSte = Hook_Install((void*)a_ste, (void*)h_ste, (void**)&o_ste);
-        bool okUe = Hook_Install((void*)a_ue, (void*)h_ue, (void**)&o_ue);
+        bool okSte = Hook::Install((void*)a_ste, (void*)h_ste, (void**)&o_ste);
+        bool okUe = Hook::Install((void*)a_ue, (void*)h_ue, (void**)&o_ue);
         if (!okSte || !okUe) {
-            Log::F("[CrashCapture] phys hook: FAILED to install core hooks (ste=%d ue=%d) -- "
+            Log::F("[Crash Capture] phys hook: FAILED to install core hooks (ste=%d ue=%d) -- "
                    "removing any partial hooks.\n", (int)okSte, (int)okUe);
-            Hook_RemoveAll();
+            Hook::RemoveAll();
             return false;
         }
-        if (a_di) Hook_Install((void*)a_di, (void*)h_di, (void**)&o_di);
-        if (a_stev) Hook_Install((void*)a_stev, (void*)h_stev, (void**)&o_stev);
+        if (a_di) Hook::Install((void*)a_di, (void*)h_di, (void**)&o_di);
+        if (a_stev) Hook::Install((void*)a_stev, (void*)h_stev, (void**)&o_stev);
 
         g_installed = true;
         return true;
     }
 
-    void PhysHook_Uninstall()
+    void Phys::Bind::Uninstall()
     {
         if (!g_installed) return;
-        Hook_RemoveAll();
+        Hook::RemoveAll();
         o_ste = 0; o_ue = 0; o_di = 0; o_stev = 0;
         g_installed = false;
         Log::Debug("[CC-HOOK] removed all IVP detours (%llu lag episode(s) this run).\n",
                     (unsigned long long)g_lagEpisodes);
     }
 
-    uint64_t PhysHook_LagEpisodes() { return g_lagEpisodes; }
+    uint64_t Phys::Bind::LagEpisodes() { return g_lagEpisodes; }
 }
 
 #else
 
 namespace CrashCapture {
-    void PhysHook_Init() {}
-    bool PhysHook_Install() { return false; }
-    void PhysHook_Uninstall() {}
-    uint64_t PhysHook_LagEpisodes() { return 0; }
+    void Phys::Bind::Init() {}
+    bool Phys::Bind::Install() { return false; }
+    void Phys::Bind::Uninstall() {}
+    uint64_t Phys::Bind::LagEpisodes() { return 0; }
 }
 
 #endif

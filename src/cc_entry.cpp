@@ -17,7 +17,7 @@
 CC_EXPORT void CrashCapture_Arm() { CrashCapture::Init(); }
 CC_EXPORT void CrashCapture_Disarm() { CrashCapture::Shutdown(); }
 CC_EXPORT void CrashCapture_Pulse() { CrashCapture::Pulse(); }
-CC_EXPORT void CrashCapture_InstallLuaHeartbeat() { CrashCapture::Lua_InstallHeartbeatAll(); }
+CC_EXPORT void CrashCapture_InstallLuaHeartbeat() { CrashCapture::Lua::InstallHeartbeatAll(); }
 
 // This is what allows us to attach to gmod over lua
 CC_EXPORT int gmod13_open(GarrysMod::lua_State* L)
@@ -25,15 +25,16 @@ CC_EXPORT int gmod13_open(GarrysMod::lua_State* L)
     CrashCapture::Init();
     if (L && L->luabase) {
         L->luabase->SetState(L);
-        CrashCapture::Lua_OnInit(L->luabase);
+        CrashCapture::Lua::MarkModuleLoad();
+        CrashCapture::Lua::OnInit(L->luabase);
     }
     return 0;
 }
 
 CC_EXPORT int gmod13_close(GarrysMod::lua_State* L)
 {
-    if (L && L->luabase) CrashCapture::Lua_OnShutdown(L->luabase);
-    if (!CrashCapture::Lua_HasBoundRealms()) CrashCapture::Shutdown();
+    if (L && L->luabase) CrashCapture::Lua::OnShutdown(L->luabase);
+    if (!CrashCapture::Lua::HasBoundRealms()) CrashCapture::Shutdown();
     return 0;
 }
 
@@ -95,9 +96,9 @@ public:
     void          GameFrame(bool) override {
         CrashCapture::Pulse();
         // TODO: we need to switch off of this for plugins, its unreliable.
-        if ((++m_frame & 15) == 0) CrashCapture::Lua_EnsureApi();
+        if ((++m_frame & 15) == 0) CrashCapture::Lua::EnsureApi();
     }
-    void          LevelShutdown(void) override { CrashCapture::Grace(30); }
+    void          LevelShutdown(void) override { CrashCapture::Grace(60); }
     void          ClientActive(edict_t*) override {}
     void          ClientDisconnect(edict_t*) override {}
     void          ClientPutInServer(edict_t*, const char*) override {}
@@ -109,8 +110,8 @@ public:
     void          OnQueryCvarValueFinished(QueryCvarCookie_t, edict_t*, EQueryCvarValueStatus, const char*, const char*) override {}
     void          OnEdictAllocated(edict_t*) override {}
     void          OnEdictFreed(const edict_t*) override {}
-    void          OnLuaInit(GarrysMod::Lua::ILuaInterface* LUA) override { CrashCapture::Lua_OnInit((void*)LUA); }
-    void          OnLuaShutdown(GarrysMod::Lua::ILuaInterface* LUA) override { CrashCapture::Lua_OnShutdown((void*)LUA); }
+    void          OnLuaInit(GarrysMod::Lua::ILuaInterface* LUA) override { CrashCapture::Lua::OnInit((void*)LUA); }
+    void          OnLuaShutdown(GarrysMod::Lua::ILuaInterface* LUA) override { CrashCapture::Lua::OnShutdown((void*)LUA); }
 };
 
 CrashCapturePlugin g_plugin;

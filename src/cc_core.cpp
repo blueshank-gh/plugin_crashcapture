@@ -1,7 +1,7 @@
 // Lifecycle, configuration and shared report sections.
 
 #include "crashcapture.h"
-#include "cc_physrecover.h"
+#include "features/cc_physrecover.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -101,6 +101,8 @@ namespace CrashCapture {
         c.manual_dump = EnvInt("CRASHCAPTURE_MANUAL_DUMP", 1) != 0;
         c.console = EnvInt("CRASHCAPTURE_CONSOLE", 0) != 0;
         c.symbols = EnvInt("CRASHCAPTURE_SYMBOLS", 1) != 0;
+        c.engine_error = EnvInt("CRASHCAPTURE_ENGINE_ERROR", 1) != 0;
+        c.frame_profile = EnvInt("CRASHCAPTURE_FRAME_PROFILE", 1) != 0;
 
         // store crashes in <gmod-root>/crashes
         const char* dir = getenv("CRASHCAPTURE_DIR");
@@ -173,7 +175,7 @@ namespace CrashCapture {
         #endif
 
         if (deleted > 0)
-            Log::F("[CrashCapture] pruned %d old report(s) (older than %d day(s)) from %s\n",
+            Log::F("[Crash Capture] pruned %d old report(s) (older than %d day(s)) from %s\n",
                    deleted, days, dir);
         return deleted;
     }
@@ -201,13 +203,13 @@ namespace CrashCapture {
                 Cfg().firstchance = true;
         #endif
         if (deferArm) {
-            Watchdog_Start(true); // gate thread installs handlers once lua appears
+            Watchdog::Start(true); // gate thread installs handlers once lua appears
             return;
         }
 
         InstallHandlers();
         if (Cfg().timeout_sec > 0)
-            Watchdog_Start(false);
+            Watchdog::Start(false);
     }
 
     // Resolve modules + Lua, install handlers, print the armed banner.
@@ -215,9 +217,9 @@ namespace CrashCapture {
     {
         if (Cfg().console) Log::EnableConsole();
 
-        Modules_Refresh();
-        Lua_RefreshStates();
-        Platform_Install();
+        Modules::Refresh();
+        Lua::RefreshStates();
+        Platform::Install();
 
         // Armed banner with the absolute report dir (resolves cwd ambiguity).
         #if defined(CC_WINDOWS)
@@ -234,25 +236,29 @@ namespace CrashCapture {
         #endif
         Log::F("CrashCapture - v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_SIDE " - " __TIME__ " " __DATE__
             "\nreports -> %s\n", abdir);
+
+        #ifndef INTERFACE_PLUGIN
+            Lua::InstallSideloadBootstrap();
+        #endif
     }
 
     void Shutdown()
     {
         if (!g_initialized) return;
-        Watchdog_Stop();
-        Platform_Uninstall();
+        Watchdog::Stop();
+        Platform::Uninstall();
         g_initialized = false;
-        Log::Str("[CrashCapture] disarmed.\n");
+        Log::Str("[Crash Capture] disarmed.\n");
     }
 
     void Pulse()
     {
-        Watchdog_Pulse();
+        Watchdog::Pulse();
         #if defined(CC_LINUX) // TODO: windows at some point.
-            PhysRecover_PollGameThread();
+            Phys::Recover::PollGameThread();
         #endif
-        Lua_PollRecovery();
-        Lua_PollReady();
+        Lua::PollRecovery();
+        Lua::PollReady();
     }
 
     const char* StallClassName(int cls)
@@ -270,11 +276,12 @@ namespace CrashCapture {
     {
         uint64_t until = MonotonicMs() + (uint64_t)seconds * 1000ull;
         if (until > g_graceUntilMs) g_graceUntilMs = until;
+        g_graceAnchorPulse = g_lastPulseMs;
     }
 
     void DumpNow(const char* reason)
     {
-        Platform_DumpThread("dump", reason ? reason : "manual dump_now");
+        Platform::DumpThread("dump", reason ? reason : "manual dump_now");
     }
 
     // --------- core-report ---
@@ -283,19 +290,19 @@ namespace CrashCapture {
     static char g_ctxReason[256] = {0};
     static uintptr_t g_ctxFault = 0;
 
-    void Report_SetContext(const char* kind, const char* reason, uintptr_t fault)
+    void Report::SetContext(const char* kind, const char* reason, uintptr_t fault)
     {
         snprintf(g_ctxKind, sizeof(g_ctxKind), "%s", kind ? kind : "");
         snprintf(g_ctxReason, sizeof(g_ctxReason), "%s", reason ? reason : "");
         g_ctxFault = fault;
     }
-    const char* Report_Kind() { return g_ctxKind; }
-    const char* Report_Reason() { return g_ctxReason; }
-    uintptr_t Report_Fault() { return g_ctxFault; }
-    uint64_t Report_Uptime() { return MonotonicMs() - g_startMs; }
+    const char* Report::Kind() { return g_ctxKind; }
+    const char* Report::Reason() { return g_ctxReason; }
+    uintptr_t Report::Fault() { return g_ctxFault; }
+    uint64_t Report::Uptime() { return MonotonicMs() - g_startMs; }
 
     // I had to do this, please.
-    const char* Report_Meme()
+    const char* Report::Meme()
     {
         static const char* const DehMemes[] = {
             "i think something has happened.",
@@ -328,7 +335,7 @@ namespace CrashCapture {
         return DehMemes[(size_t)(MonotonicMs() + time(NULL)) % MemeCount];
     }
 
-    void Report_Header(const char* kind, const char* reason)
+    void Report::Header(const char* kind, const char* reason)
     {
         char stamp[32];
         UtcStamp(stamp, sizeof(stamp));
@@ -350,20 +357,20 @@ namespace CrashCapture {
         else Log::Str("- **pulse** : never (no heartbeat source in this configuration)\n");
         Log::Flush();
 
-        Report_Banner(kind, reason, Log::Path());
+        Report::Banner(kind, reason, Log::Path());
     }
 
-    void Report_Banner(const char* kind, const char* reason, const char* reportPath)
+    void Report::Banner(const char* kind, const char* reason, const char* reportPath)
     {
         Log::Notice("\n======================= Crash Capture =======================\n");
-        Log::Notice("  %s\n", Report_Meme());
+        Log::Notice("  %s\n", Report::Meme());
         Log::Notice("  %s detected\n", kind ? kind : "event");
         Log::Notice("  reason : %s\n", reason ? reason : "-");
         if (reportPath && *reportPath) Log::Notice("  report : %s\n", reportPath);
         Log::Notice("=============================================================\n\n");
     }
 
-    void Report_Footer()
+    void Report::Footer()
     {
         Log::F("\n---\n\n_END OF REPORT (%s)_\n\n", Log::Path());
         Log::Flush();
@@ -378,28 +385,28 @@ namespace CrashCapture {
         if (s->pcMod && strstr(s->pcMod->name, "vphysics")) { s->hit = true; return; }
 
         uintptr_t pcs[48];
-        int n = Platform_Backtrace(s->ctx, pcs, 48);
+        int n = Platform::Backtrace(s->ctx, pcs, 48);
         for (int i = 0; i < n; ++i) {
-            const CCModule* fm = Modules_Find(pcs[i]);
+            const CCModule* fm = Modules::Find(pcs[i]);
             if (fm && strstr(fm->name, "vphysics")) { s->hit = true; return; }
             char sym[256];
-            if (Sym_Resolve(pcs[i], sym, sizeof(sym)) &&
+            if (Sym::Resolve(pcs[i], sym, sizeof(sym)) &&
                 (strstr(sym, "PhysFrame") || strstr(sym, "CPhysicsHook") ||
                  strstr(sym, "PhysicsSimulate"))) { s->hit = true; return; }
         }
     }
 
-    int Report_ClassifyStall(void* ctx, char* out, size_t outsz)
+    int Report::ClassifyStall(void* ctx, char* out, size_t outsz)
     {
-        uintptr_t pc = Platform_ContextPC(ctx);
+        uintptr_t pc = Platform::ContextPC(ctx);
         if (!pc) { snprintf(out, outsz, "unknown (no thread context)"); return STALL_UNKNOWN; }
 
-        const CCModule* m = Modules_Find(pc);
+        const CCModule* m = Modules::Find(pc);
         if (m && strstr(m->name, "lua_shared")) {
             snprintf(out, outsz, "lua (interpreter)");
             return STALL_LUA_INTERP;
         }
-        if ((!m || strcmp(m->name, "[anon-exec]") == 0) && Mem_IsExecutable(pc)) {
+        if ((!m || strcmp(m->name, "[anon-exec]") == 0) && Mem::IsExecutable(pc)) {
             snprintf(out, outsz, "lua (JIT trace / mcode)");
             return STALL_LUA_JIT;
         }
@@ -414,7 +421,7 @@ namespace CrashCapture {
         return STALL_UNKNOWN;
     }
 
-    void Report_Section(const char* title, SectionFn fn, void* arg, bool fenced)
+    void Report::Section(const char* title, SectionFn fn, void* arg, bool fenced)
     {
         Log::F("\n## %s\n\n", title);
         if (fenced) Log::OpenFence();

@@ -4,8 +4,7 @@
 // thread by signalling it (SIGUSR2) so it writes its own context.
 
 #include "crashcapture.h"
-#include "cc_signature.h"
-#include "cc_physrecover.h"
+#include "features/index.hpp"
 
 #if defined(CC_LINUX)
 
@@ -127,9 +126,9 @@ namespace CrashCapture {
         return NULL; // cache full
     }
 
-    void Sym_Init() {}
+    void Sym::Init() {}
 
-    void Sym_Cleanup()
+    void Sym::Cleanup()
     {
         for (size_t i = 0; i < sizeof(g_elf)/sizeof(g_elf[0]); ++i)
             if (g_elf[i].map) { munmap(g_elf[i].map, g_elf[i].maplen); g_elf[i].map = NULL; }
@@ -180,7 +179,7 @@ namespace CrashCapture {
         return true;
     }
 
-    bool Sym_Resolve(uintptr_t addr, char* out, size_t outsz)
+    bool Sym::Resolve(uintptr_t addr, char* out, size_t outsz)
     {
         if (!Cfg().symbols) return false;
         return SymResolveCore(addr, out, outsz, true);
@@ -203,15 +202,15 @@ namespace CrashCapture {
         return 0;
     }
 
-    uintptr_t Sym_Lookup(const char* module, const char* name)
+    uintptr_t Sym::Lookup(const char* module, const char* name)
     {
         if (!name || !*name) return 0;
         if (module) {
-            const CCModule* m = Modules_FindByName(module);
+            const CCModule* m = Modules::FindByName(module);
             return m ? ElfLookup(m, name) : 0;
         }
         const CCModule* mods = NULL;
-        int c = Modules_Snapshot(&mods);
+        int c = Modules::Snapshot(&mods);
         for (int i = 0; i < c; ++i) {
             uintptr_t a = ElfLookup(&mods[i], name);
             if (a) return a;
@@ -219,7 +218,7 @@ namespace CrashCapture {
         return 0;
     }
 
-    int Platform_EnumThreads(CCThread* out, int max)
+    int Platform::EnumThreads(CCThread* out, int max)
     {
         if (!out || max <= 0) return 0;
         int self = gettid_();
@@ -283,7 +282,7 @@ namespace CrashCapture {
 
     // --------- linux-registers ---
 
-    void Report_Registers(void* vctx)
+    void Report::Registers(void* vctx)
     {
         ucontext_t* uc = (ucontext_t*)vctx;
         if (!uc) { Log::Str("  <no context>\n"); return; }
@@ -318,7 +317,7 @@ namespace CrashCapture {
             Log::F("  eflags=%08x\n", (unsigned)g[REG_EFL]);
             uintptr_t sp = (uintptr_t)g[REG_ESP];
         #endif
-        if (Mem_IsReadable((void*)pc, 16)) {
+        if (Mem::IsReadable((void*)pc, 16)) {
             Log::Str("  code bytes at instruction pointer:\n");
             Log::HexDump((void*)pc, 16, pc);
         }
@@ -348,7 +347,7 @@ namespace CrashCapture {
         return (++*n > 8) ? _URC_END_OF_STACK : _URC_NO_REASON;
     }
 
-    void Report_StackScan(void* vctx)
+    void Report::StackScan(void* vctx)
     {
         if (!vctx) { Log::Str("  <no context>\n"); return; }
         ucontext_t* uc = (ucontext_t*)vctx;
@@ -359,9 +358,9 @@ namespace CrashCapture {
         #endif
         int found = 0;
         for (uintptr_t a = sp; a < sp + 0x4000 && found < 64; a += sizeof(uintptr_t)) {
-            if (!Mem_IsReadable((void*)a, sizeof(uintptr_t))) break;
+            if (!Mem::IsReadable((void*)a, sizeof(uintptr_t))) break;
             uintptr_t v = *(uintptr_t*)a;
-            if (Modules_Find(v) && Mem_IsExecutable(v)) {
+            if (Modules::Find(v) && Mem::IsExecutable(v)) {
                 char buf[512]; FormatAddress(v, buf, sizeof(buf));
                 Log::F("  [sp+0x%llx] %s\n", (unsigned long long)(a - sp), buf);
                 ++found;
@@ -370,7 +369,7 @@ namespace CrashCapture {
         if (!found) Log::Str("  <none>\n");
     }
 
-    void Report_NativeStack(void* vctx)
+    void Report::NativeStack(void* vctx)
     {
         // PC in no file-backed module (anon-exec or unmapped) is typically LuaJIT mcode
         if (vctx) {
@@ -380,7 +379,7 @@ namespace CrashCapture {
             #else
                 uintptr_t pc0 = (uintptr_t)uc->uc_mcontext.gregs[REG_EIP];
             #endif
-            const CCModule* m0 = pc0 ? Modules_Find(pc0) : NULL;
+            const CCModule* m0 = pc0 ? Modules::Find(pc0) : NULL;
             if (pc0 && (!m0 || strcmp(m0->name, "[anon-exec]") == 0))
                 Log::Str("  note: instruction pointer is in anonymous executable memory "
                     "(likely LuaJIT mcode); see the Lua section for the Lua frame.\n");
@@ -400,7 +399,7 @@ namespace CrashCapture {
         return (s->n >= s->max || s->n > 96) ? _URC_END_OF_STACK : _URC_NO_REASON;
     }
 
-    int Platform_Backtrace(void* /*vctx*/, uintptr_t* out, int max)
+    int Platform::Backtrace(void* /*vctx*/, uintptr_t* out, int max)
     {
         if (!out || max <= 0) return 0;
         BtArr s = { out, 0, max };
@@ -411,11 +410,12 @@ namespace CrashCapture {
     // --------- linux-section-adapters ---
 
     static void* g_curCtx = NULL;
-    static void Sec_Registers(void*) { Report_Registers(g_curCtx); }
-    static void Sec_Stack(void*) { Report_NativeStack(g_curCtx); }
-    static void Sec_StackScan(void*) { Report_StackScan(g_curCtx); }
-    static void Sec_Lua(void*) { Lua_Dump(); }
-    static void Sec_Modules(void*) { Modules_Dump(); }
+    static void Sec_Registers(void*) { Report::Registers(g_curCtx); }
+    static void Sec_Stack(void*) { Report::NativeStack(g_curCtx); }
+    static void Sec_StackScan(void*) { Report::StackScan(g_curCtx); }
+    static void Sec_Lua(void*) { Lua::Dump(); }
+    static void Sec_Modules(void*) { Modules::Dump(); }
+    static void Sec_EngineFrame(void*) { Engine::ReportFrameProfile(); }
 
     static const char* SignalName(int s)
     {
@@ -429,12 +429,12 @@ namespace CrashCapture {
         }
     }
 
-    bool Platform_IsGameThread()
+    bool Platform::IsGameThread()
     {
         return g_gameThreadTid != 0 && (int)syscall(SYS_gettid) == g_gameThreadTid;
     }
 
-    uintptr_t Platform_ContextPC(void* vctx)
+    uintptr_t Platform::ContextPC(void* vctx)
     {
         if (!vctx) return 0;
         ucontext_t* uc = (ucontext_t*)vctx;
@@ -447,28 +447,29 @@ namespace CrashCapture {
 
     static void WriteReport(const char* kind, const char* reason, void* uctx, uintptr_t fault = 0)
     {
-        Modules_Refresh();
+        Modules::Refresh();
         Log::Open(kind);
 
         const char* dispKind = kind;
         char dk[96];
         if (kind && (strcmp(kind, "hang") == 0 || strcmp(kind, "dump") == 0)) {
             char stall[128];
-            g_lastStallClass = Report_ClassifyStall(uctx, stall, sizeof(stall));
+            g_lastStallClass = Report::ClassifyStall(uctx, stall, sizeof(stall));
             snprintf(dk, sizeof(dk), "%s - %s", kind, stall);
             dispKind = dk;
         }
 
-        Report_SetContext(dispKind, reason, fault);
-        Report_Header(dispKind, reason);
+        Report::SetContext(dispKind, reason, fault);
+        Report::Header(dispKind, reason);
         g_curCtx = uctx;
-        Report_Section("Registers", Sec_Registers, NULL, true);
-        Report_Section("Native stack", Sec_Stack, NULL, true);
-        Report_Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
-        Report_Section("Lua", Sec_Lua, NULL, false);
-        Report_Section("Modules", Sec_Modules, NULL, false);
-        Report_Section("Diagnostics", Diag_Section, uctx, false);
-        Report_Footer();
+        { EngineFrameStats efs; if (Engine::FrameStats(&efs)) Report::Section("Profiling", Sec_EngineFrame, NULL, false); }
+        Report::Section("Registers", Sec_Registers, NULL, true);
+        Report::Section("Native stack", Sec_Stack, NULL, true);
+        Report::Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
+        Report::Section("Lua", Sec_Lua, NULL, false);
+        Report::Section("Modules", Sec_Modules, NULL, false);
+        Report::Section("Diagnostics", Diag::Section, uctx, false);
+        Report::Footer();
         Log::Close();
     }
 
@@ -477,7 +478,7 @@ namespace CrashCapture {
 
     // Raw symbol resolution (no demangle, no cfg gate) for cc_physrecover's frame
     // matching. The physics crash/hang recovery itself lives in cc_physrecover.cpp.
-    bool Sym_ResolveRaw(uintptr_t addr, char* out, size_t outsz)
+    bool Sym::ResolveRaw(uintptr_t addr, char* out, size_t outsz)
     {
         return SymResolveCore(addr, out, outsz, false);
     }
@@ -509,7 +510,7 @@ namespace CrashCapture {
 
         // physics fault on the game thread? pause physics and resume instead of dying.
         if (g_gameThreadTid == 0 || tid == g_gameThreadTid) {
-            if (PhysRecover_ResumeFromFault(sig, ucontext)) {
+            if (Phys::Recover::ResumeFromFault(sig, ucontext)) {
                 g_inReport = 0;
                 return;
             }
@@ -534,7 +535,7 @@ namespace CrashCapture {
     {
         if (g_pendAction == CC_ACT_LUABREAK) {
             g_pendAction = CC_ACT_DUMP; // one-shot
-            g_breakArmed = (sig_atomic_t)(g_inReport ? 0 : Lua_ArmBreakHook());
+            g_breakArmed = (sig_atomic_t)(g_inReport ? 0 : Lua::ArmBreakHook());
             g_dumpDone = 1;
             return;
         }
@@ -547,14 +548,14 @@ namespace CrashCapture {
                                 g_pendReason ? g_pendReason : "hang", ucontext);
                 } else {
                     char stall[128];
-                    g_lastStallClass = Report_ClassifyStall(ucontext, stall, sizeof(stall));
+                    g_lastStallClass = Report::ClassifyStall(ucontext, stall, sizeof(stall));
                 }
                 g_inReport = 0;
             }
             Log::Debug("[CC-PHYS] handler: physresolve action, class=%d (physics=%d) force=%d\n",
                         g_lastStallClass, (int)(g_lastStallClass == STALL_PHYSICS), (int)g_pendForceResume);
             g_breakArmed = (g_lastStallClass == STALL_PHYSICS)
-                             ? (sig_atomic_t)PhysRecover_ResumeFromHang(ucontext, g_pendForceResume != 0) : 0;
+                             ? (sig_atomic_t)Phys::Recover::ResumeFromHang(ucontext, g_pendForceResume != 0) : 0;
             g_dumpDone = 1;
             return;
         }
@@ -581,7 +582,7 @@ namespace CrashCapture {
                 g_inReport = 0;
             }
         } else {
-            Platform_DumpThread("dump", "manual dump requested (SIGUSR1)");
+            Platform::DumpThread("dump", "manual dump requested (SIGUSR1)");
         }
 
         // don't swallow a prior USR1 owner, but never chain into SIG_DFL (that would kill us).
@@ -593,7 +594,7 @@ namespace CrashCapture {
         }
     }
 
-    int Platform_RequestLuaBreak()
+    int Platform::RequestLuaBreak()
     {
         int self = gettid_();
         if (!g_gameThreadTid || g_gameThreadTid == self) return -1;
@@ -613,7 +614,7 @@ namespace CrashCapture {
         return (int)g_breakArmed;
     }
 
-    int Platform_RequestPhysResolve(const char* kind, const char* reason, bool writeReport)
+    int Platform::RequestPhysResolve(const char* kind, const char* reason, bool writeReport)
     {
         int self = gettid_();
         if (!g_gameThreadTid || g_gameThreadTid == self) return -1;
@@ -638,7 +639,7 @@ namespace CrashCapture {
         return (int)g_breakArmed; // 0 = no resume / non-physics, 1 = escaped
     }
 
-    void Platform_DumpThread(const char* kind, const char* reason)
+    void Platform::DumpThread(const char* kind, const char* reason)
     {
         int self = gettid_();
         if (g_gameThreadTid && g_gameThreadTid != self) {
@@ -652,7 +653,7 @@ namespace CrashCapture {
                     nanosleep(&ts, NULL);
                 }
                 if (g_dumpDone) return;
-                Log::Str("[CrashCapture] hang: target thread did not respond to dump signal; "
+                Log::Str("[Crash Capture] hang: target thread did not respond to dump signal; "
                          "writing from watchdog thread.\n");
             }
         }
@@ -664,7 +665,7 @@ namespace CrashCapture {
     }
 
     // --------- linux-install ---
-    void Platform_Install()
+    void Platform::Install()
     {
         static char altbuf[64 * 1024];
         g_altstack.ss_sp = altbuf;
@@ -701,21 +702,18 @@ namespace CrashCapture {
             g_usr1Installed = true;
         }
 
-        Sym_Init();
-        PhysRecover_Init();
-        PhysHook_Init();
-        if (Cfg().phys_resume || Cfg().phys_recover || Cfg().phys_hook)
-            Sig_Init();
+        Sym::Init();
+        Features::Init();
     }
 
-    void Platform_Uninstall()
+    void Platform::Uninstall()
     {
-        PhysHook_Uninstall(); // remove IVP detours FIRST so nothing jumps into freed memory
+        Features::Shutdown();
         for (int i = 0; kFatal[i]; ++i)
             sigaction(kFatal[i], &g_old[kFatal[i]], NULL);
         signal(SIGUSR2, SIG_DFL);
         if (g_usr1Installed) { sigaction(SIGUSR1, &g_oldUsr1, NULL); g_usr1Installed = false; }
-        Sym_Cleanup();
+        Sym::Cleanup();
     }
 }
 

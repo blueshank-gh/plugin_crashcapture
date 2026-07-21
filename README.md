@@ -83,6 +83,7 @@ crashcapture.set("hang_kill", 15) -- force-close 15s after a freeze report
 crashcapture.set("loopbreak", false)
 print(crashcapture.get("timeout")) -- 30
 crashcapture.pulse() -- manual heartbeat
+crashcapture.frametime() -- returns a table of timing metrics
 ```
 
 > In plugin mode the Lua table appears a little after the realm comes up (it's
@@ -119,7 +120,7 @@ tick, as soon as the table is installed and usable:
 
 ```lua
 hook.Add("crashcapture.ready", "configure_crashcapture", function(info)
-    print("[CrashCapture] ready in", info.realm) -- "server" / "client" / "menu"
+    print("[Crash Capture] ready in", info.realm) -- "server" / "client" / "menu"
     crashcapture.set("timeout", 30)
 end)
 ```

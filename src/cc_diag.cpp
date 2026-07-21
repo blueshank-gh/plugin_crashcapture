@@ -2,7 +2,7 @@
 // On a crash, spins up a FRESH lua_State for live debugging
 
 #include "crashcapture.h"
-#include "cc_signature.h"
+#include "tools/cc_signature.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -57,7 +57,7 @@ namespace CrashCapture {
     static bool ResolveDiagApi()
     {
         if (A.ok) return true;
-        void* m = Lua_SharedHandle();
+        void* m = Lua::SharedHandle();
         if (!m) { g_diagDiag = "lua_shared handle not found"; return false; }
         struct Sym { const char* name; void** slot; };
         Sym syms[] = {
@@ -86,7 +86,7 @@ namespace CrashCapture {
         };
         bool all = true;
         for (size_t i = 0; i < sizeof(syms)/sizeof(syms[0]); ++i) {
-            *syms[i].slot = Lua_Sym(m, syms[i].name);
+            *syms[i].slot = Lua::Sym(m, syms[i].name);
             if (!*syms[i].slot && all) { g_diagDiag = syms[i].name; all = false; }
         }
         A.ok = all;
@@ -115,7 +115,7 @@ namespace CrashCapture {
         const char* ty = A.tolstring(L, 2, NULL);
         if (!ty || !a) { A.pushnil(L); return 1; }
 
-        #define RD_NUM(T) do { if (!Mem_IsReadable((void*)a, sizeof(T))) { A.pushnil(L); return 1; } \
+        #define RD_NUM(T) do { if (!Mem::IsReadable((void*)a, sizeof(T))) { A.pushnil(L); return 1; } \
             T v; memcpy(&v, (void*)a, sizeof(T)); A.pushnumber(L, (double)v); return 1; } while (0)
         if (!strcmp(ty, "int8")) RD_NUM(signed char);
         else if (!strcmp(ty, "uint8")) RD_NUM(unsigned char);
@@ -128,7 +128,7 @@ namespace CrashCapture {
         else if (!strcmp(ty, "float")) RD_NUM(float);
         else if (!strcmp(ty, "double")) RD_NUM(double);
         else if (!strcmp(ty, "ptr")) {
-            if (!Mem_IsReadable((void*)a, sizeof(void*))) {
+            if (!Mem::IsReadable((void*)a, sizeof(void*))) {
                 A.pushnil(L);
                 return 1;
             }
@@ -149,7 +149,7 @@ namespace CrashCapture {
         static char buf[4096];
         int n = 0;
         for (; n < maxlen; ++n) {
-            if (!Mem_IsReadable((void*)(a + n), 1)) break;
+            if (!Mem::IsReadable((void*)(a + n), 1)) break;
             char c = *(char*)(a + n);
             if (!c) break;
             buf[n] = c;
@@ -169,7 +169,7 @@ namespace CrashCapture {
     static int mem_deref(lua_State* L)
     {
         uintptr_t a = ArgAddr(L, 1);
-        if (!Mem_IsReadable((void*)a, sizeof(void*))) { A.pushnil(L); return 1; }
+        if (!Mem::IsReadable((void*)a, sizeof(void*))) { A.pushnil(L); return 1; }
         void* p; memcpy(&p, (void*)a, sizeof(void*));
         A.pushlightuserdata(L, p);
         return 1;
@@ -184,20 +184,20 @@ namespace CrashCapture {
     static int mem_readable(lua_State* L)
     {
         size_t n = A.type(L, 2) == LUA_TNUM ? (size_t)A.tonumber(L, 2) : 1;
-        A.pushboolean(L, Mem_IsReadable((void*)ArgAddr(L, 1), n) ? 1 : 0);
+        A.pushboolean(L, Mem::IsReadable((void*)ArgAddr(L, 1), n) ? 1 : 0);
         return 1;
     }
 
     static int mem_executable(lua_State* L)
     {
-        A.pushboolean(L, Mem_IsExecutable(ArgAddr(L, 1)) ? 1 : 0);
+        A.pushboolean(L, Mem::IsExecutable(ArgAddr(L, 1)) ? 1 : 0);
         return 1;
     }
 
     static int mem_find(lua_State* L)
     {
         const char* name = A.tolstring(L, 1, NULL);
-        const CCModule* m = name ? Modules_FindByName(name) : NULL;
+        const CCModule* m = name ? Modules::FindByName(name) : NULL;
         if (!m) { A.pushnil(L); return 1; }
         A.pushlightuserdata(L, (void*)m->base);
         A.pushnumber(L, (double)m->size);
@@ -207,7 +207,7 @@ namespace CrashCapture {
     static int mem_modules(lua_State* L)
     {
         const CCModule* mods = NULL;
-        int count = Modules_Snapshot(&mods);
+        int count = Modules::Snapshot(&mods);
         A.createtable(L, count, 0);
         for (int i = 0; i < count; ++i) {
             A.createtable(L, 0, 3);
@@ -225,7 +225,7 @@ namespace CrashCapture {
         const char* name = A.tolstring(L, 1, NULL);
         const char* pat  = A.tolstring(L, 2, NULL);
         if (!name || !pat) { A.pushnil(L); return 1; }
-        uintptr_t hit = Sig_Scan(name, pat);
+        uintptr_t hit = Sig::Scan(name, pat);
         if (hit) A.pushlightuserdata(L, (void*)hit);
         else A.pushnil(L);
         return 1;
@@ -253,15 +253,15 @@ namespace CrashCapture {
             A.pushboolean(L, x);
             A.setfield(L, -2, "execute");
         #else
-            const CCModule* m = Modules_Find(a);
+            const CCModule* m = Modules::Find(a);
             A.pushlightuserdata(L, (void*)(m ? m->base : (a & ~(uintptr_t)0xFFF)));
             A.setfield(L, -2, "base");
             A.pushnumber(L, (double)(m ? m->size : 0x1000));
             A.setfield(L, -2, "size");
-            A.pushboolean(L, Mem_IsReadable((void*)a, 1) ? 1 : 0);
+            A.pushboolean(L, Mem::IsReadable((void*)a, 1) ? 1 : 0);
             A.setfield(L, -2, "read");
             A.pushboolean(L, 0); A.setfield(L, -2, "write");
-            A.pushboolean(L, Mem_IsExecutable(a) ? 1 : 0);
+            A.pushboolean(L, Mem::IsExecutable(a) ? 1 : 0);
             A.setfield(L, -2, "execute");
         #endif
         return 1;
@@ -274,7 +274,7 @@ namespace CrashCapture {
         if (want > 512) want = 512;
         if (!a) { A.pushnumber(L, 0); return 1; }
         size_t avail = 0;
-        while (avail < want && Mem_IsReadable((void*)(a + avail), 1)) ++avail;
+        while (avail < want && Mem::IsReadable((void*)(a + avail), 1)) ++avail;
         if (avail) Log::HexDump((void*)a, avail, a);
         A.pushnumber(L, (double)avail);
         return 1;
@@ -287,7 +287,7 @@ namespace CrashCapture {
         const char* module = s2 ? s1 : NULL;
         const char* name = s2 ? s2 : s1;
         if (!name) { A.pushnil(L); return 1; }
-        uintptr_t addr = Sym_Lookup(module, name);
+        uintptr_t addr = Sym::Lookup(module, name);
         if (!addr) { A.pushnil(L); return 1; }
         A.pushlightuserdata(L, (void*)addr);
         return 1;
@@ -296,7 +296,7 @@ namespace CrashCapture {
     static int mem_threads(lua_State* L)
     {
         static CCThread th[256];
-        int n = Platform_EnumThreads(th, 256);
+        int n = Platform::EnumThreads(th, 256);
         A.createtable(L, n, 0);
         for (int i = 0; i < n; ++i) {
             A.createtable(L, 0, 5);
@@ -325,7 +325,7 @@ namespace CrashCapture {
         for (int i = 2; i <= top; ++i) {
             a += (uintptr_t)(long long)A.tonumber(L, i);
             if (i < top) { // intermediate hop: follow the pointer stored here
-                if (!a || !Mem_IsReadable((void*)a, sizeof(void*))) { A.pushnil(L); return 1; }
+                if (!a || !Mem::IsReadable((void*)a, sizeof(void*))) { A.pushnil(L); return 1; }
                 void* p; memcpy(&p, (void*)a, sizeof(void*));
                 a = (uintptr_t)p;
             }
@@ -343,7 +343,7 @@ namespace CrashCapture {
         static char buf[4096];
         int n = 0;
         for (; n < want; ++n) {
-            if (!Mem_IsReadable((void*)(a + n), 1)) break;
+            if (!Mem::IsReadable((void*)(a + n), 1)) break;
             buf[n] = *(char*)(a + n);
         }
         A.pushlstring(L, buf, (size_t)n);
@@ -383,7 +383,7 @@ namespace CrashCapture {
 
         uintptr_t hits[256];
         if (room > (int)(sizeof(hits) / sizeof(hits[0]))) room = (int)(sizeof(hits) / sizeof(hits[0]));
-        int n = Sig_FindAll(m, &pat, hits, room);
+        int n = Sig::FindAll(m, &pat, hits, room);
         for (int i = 0; i < n; ++i) {
             A.pushlightuserdata(L, (void*)hits[i]);
             A.rawseti(L, -2, ++(*count));
@@ -393,7 +393,7 @@ namespace CrashCapture {
     static int mem_search(lua_State* L)
     {
         const char* mod = A.type(L, 1) == LUA_TSTR ? A.tolstring(L, 1, NULL) : NULL;
-        const CCModule* m = mod ? Modules_FindByName(mod) : NULL;
+        const CCModule* m = mod ? Modules::FindByName(mod) : NULL;
         if (!m) { A.pushnil(L); return 1; }
         const char* ty = A.type(L, 3) == LUA_TSTR ? A.tolstring(L, 3, NULL) : "ptr";
         unsigned char needle[8];
@@ -414,7 +414,7 @@ namespace CrashCapture {
         A.createtable(L, 0, 0);
         int count = 0;
         const CCModule* mods = NULL;
-        int c = Modules_Snapshot(&mods);
+        int c = Modules::Snapshot(&mods);
         for (int i = 0; i < c && count < 256; ++i)
             ScanModuleForBytes(L, &mods[i], needle, (int)sizeof(void*), &count, 256);
         return 1;
@@ -475,16 +475,16 @@ namespace CrashCapture {
         A.setfield(L, LUA_GLOBALSINDEX, "print");
 
         A.createtable(L, 0, 10);
-        A.pushstring(L, Report_Kind());
+        A.pushstring(L, Report::Kind());
         A.setfield(L, -2, "kind");
-        A.pushstring(L, Report_Reason());
+        A.pushstring(L, Report::Reason());
         A.setfield(L, -2, "reason");
         {
-            uintptr_t f = Report_Fault();
+            uintptr_t f = Report::Fault();
             if (f) A.pushlightuserdata(L, (void*)f); else A.pushnil(L);
             A.setfield(L, -2, "fault");
         }
-        A.pushnumber(L, (double)Report_Uptime());
+        A.pushnumber(L, (double)Report::Uptime());
         A.setfield(L, -2, "uptime");
         if (g_lastPulseMs) A.pushnumber(L, (double)(MonotonicMs() - g_lastPulseMs));
         else A.pushnil(L);
@@ -539,7 +539,7 @@ namespace CrashCapture {
 
         {
             static uintptr_t pcs[64];
-            int nf = Platform_Backtrace(nativeCtx, pcs, 64);
+            int nf = Platform::Backtrace(nativeCtx, pcs, 64);
             A.createtable(L, nf, 0);
             for (int i = 0; i < nf; ++i) {
                 A.createtable(L, 0, 2);
@@ -555,7 +555,7 @@ namespace CrashCapture {
 
         {
             static CCLuaTrace traces[3];
-            int nr = Lua_CaptureTraces(traces, 3);
+            int nr = Lua::CaptureTraces(traces, 3);
             if (nr <= 0) {
                 A.pushnil(L);
             } else {
@@ -617,7 +617,7 @@ namespace CrashCapture {
         return n > 0;
     }
 
-    void Diag_Section(void* nativeCtx)
+    void Diag::Section(void* nativeCtx)
     {
         if (!Cfg().script[0]) { Log::Str("_no CRASHCAPTURE_SCRIPT set; skipped._\n"); return; }
         if (!ResolveDiagApi()) { Log::F("_diag Lua API not resolved (%s)._\n", g_diagDiag); return; }

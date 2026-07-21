@@ -1,6 +1,6 @@
 // cc_hooking - see cc_hooking.h.
 
-#include "cc_hooking.h"
+#include "tools/cc_hooking.h"
 #include "crashcapture.h" // CC_X86 / CC_X64 / CC_WINDOWS
 #include <stdint.h>
 #include <string.h>
@@ -123,7 +123,23 @@ namespace CrashCapture {
     static unsigned char* AllocTramp(size_t len, void* nearTo)
     {
         #if defined(CC_WINDOWS)
-            (void)nearTo;
+            if (kX64 && nearTo) {
+                SYSTEM_INFO si; GetSystemInfo(&si);
+                uintptr_t gran = si.dwAllocationGranularity ? si.dwAllocationGranularity : 0x10000;
+                uintptr_t target = (uintptr_t)nearTo;
+                for (uintptr_t off = gran; off < 0x78000000; off += gran) {
+                    uintptr_t cands[2] = { target - off, target + off };
+                    for (int i = 0; i < 2; ++i) {
+                        uintptr_t a = cands[i] & ~(uintptr_t)(gran - 1);
+                        if (!a) continue;
+                        MEMORY_BASIC_INFORMATION mbi;
+                        if (VirtualQuery((void*)a, &mbi, sizeof(mbi)) && mbi.State == MEM_FREE) {
+                            void* p = VirtualAlloc((void*)a, len, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+                            if (p) return (unsigned char*)p;
+                        }
+                    }
+                }
+            }
             return (unsigned char*)VirtualAlloc(NULL, len, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
         #else
             void* hint = NULL;
@@ -150,7 +166,7 @@ namespace CrashCapture {
     #endif
     }
 
-    bool Hook_Install(void* target, void* detour, void** trampoline)
+    bool Hook::Install(void* target, void* detour, void** trampoline)
     {
         if (!target || !detour) return false;
         int slot = -1;
@@ -213,7 +229,7 @@ namespace CrashCapture {
         h->len = 0;
     }
 
-    bool Hook_Uninstall(void* target)
+    bool Hook::Uninstall(void* target)
     {
         for (int i = 0; i < g_nHooks; ++i) {
             if (g_hooks[i].len && g_hooks[i].target == (unsigned char*)target) {
@@ -224,13 +240,13 @@ namespace CrashCapture {
         return false;
     }
 
-    void Hook_RemoveAll()
+    void Hook::RemoveAll()
     {
         for (int i = 0; i < g_nHooks; ++i) RestoreRec(&g_hooks[i]);
         g_nHooks = 0;
     }
 
-    int Hook_Count()
+    int Hook::Count()
     {
         int n = 0;
         for (int i = 0; i < g_nHooks; ++i) if (g_hooks[i].len) ++n;
@@ -241,6 +257,6 @@ namespace CrashCapture {
         // TODO: DllMain DETACH hook...?
     #else
         __attribute__((destructor))
-        static void Hook_AutoCleanup() { Hook_RemoveAll(); }
+        static void AutoCleanupHooks() { Hook::RemoveAll(); }
     #endif
 }

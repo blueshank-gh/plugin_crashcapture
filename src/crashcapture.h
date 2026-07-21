@@ -34,6 +34,7 @@
 #endif
 
 #define CC_VERSION "1.2.0"
+#define CC_BUILD __DATE__ " " __TIME__
 
 namespace CrashCapture {
     // --------- cc-config ---
@@ -56,6 +57,8 @@ namespace CrashCapture {
         bool manual_dump;     // CRASHCAPTURE_MANUAL_DUMP (SIGUSR1 / named event)
         bool console;         // CRASHCAPTURE_CONSOLE
         bool symbols;         // CRASHCAPTURE_SYMBOLS
+        bool engine_error;    // CRASHCAPTURE_ENGINE_ERROR
+        bool frame_profile;   // CRASHCAPTURE_FRAME_PROFILE
         char dir[512];        // CRASHCAPTURE_DIR
         char script[512];     // CRASHCAPTURE_SCRIPT
     };
@@ -68,6 +71,13 @@ namespace CrashCapture {
     void Pulse();
     void Grace(int seconds);
     void DumpNow(const char* reason);
+    const char* StallClassName(int cls);
+    uint64_t MonotonicMs();
+    void UtcStamp(char* out, size_t outsz);
+
+    typedef void (*SectionFn)(void* arg);
+    bool RunProtected(SectionFn fn, void* arg);
+    bool RunProtectedQuiet(SectionFn fn, void* arg);
 
     // --------- cc-log ---
     namespace Log {
@@ -95,53 +105,35 @@ namespace CrashCapture {
         size_t size;
         char name[96]; // basename only
     };
-    int  Modules_Refresh();
-    bool Modules_HasLua();
-    const CCModule* Modules_Find(uintptr_t addr);
-    const CCModule* Modules_FindByName(const char* needle);
-    int  Modules_Snapshot(const CCModule** out);
-    void Modules_Dump();
-    bool Mem_IsReadable(const void* p, size_t n);
-    bool Mem_IsExecutable(uintptr_t addr);
-    void FormatAddress(uintptr_t addr, char* out, size_t outsz);
-
-    void Sym_Init();
-    void Sym_Cleanup();
-    bool Sym_Resolve(uintptr_t addr, char* out, size_t outsz); // true if it wrote a name
-    bool Sym_ResolveRaw(uintptr_t addr, char* out, size_t outsz); // no demangling
-    uintptr_t Sym_Lookup(const char* module, const char* name); // name -> address; module optional (NULL = search all)
-
     struct CCThread {
         unsigned id;
         uintptr_t pc;   // 0 if not obtainable
         bool current;
         char name[32];  // empty if unknown
     };
-    int Platform_EnumThreads(CCThread* out, int max);
+    void FormatAddress(uintptr_t addr, char* out, size_t outsz);
+
+    namespace Modules {
+        int  Refresh();
+        bool HasLua();
+        const CCModule* Find(uintptr_t addr);
+        const CCModule* FindByName(const char* needle);
+        int  Snapshot(const CCModule** out);
+        void Dump();
+    }
+    namespace Mem {
+        bool IsReadable(const void* p, size_t n);
+        bool IsExecutable(uintptr_t addr);
+    }
+    namespace Sym {
+        void Init();
+        void Cleanup();
+        bool Resolve(uintptr_t addr, char* out, size_t outsz);    // true if it wrote a name
+        bool ResolveRaw(uintptr_t addr, char* out, size_t outsz); // no demangling
+        uintptr_t Lookup(const char* module, const char* name);   // name -> address; module optional (NULL = search all)
+    }
 
     // --------- cc-lua ---
-    void Lua_OnInit(void* iface);
-    void Lua_OnShutdown(void* iface);
-    bool Lua_HasBoundRealms();
-    void Lua_RefreshStates();
-    void Lua_Dump();
-    bool Lua_BreakLoop(const char* msg);
-    int  Lua_ArmBreakHook();
-    void Lua_InstallHeartbeat(void* iface);
-    void Lua_InstallHeartbeatAll();
-    void Lua_InstallApi(void* iface);
-    bool Lua_EnsureApi();
-    void* Lua_SharedHandle();
-    void* Lua_Sym(void* mod, const char* name);
-
-    // --------- cc-recovery ---
-    void Lua_PollRecovery();
-    void Lua_PollReady();
-    void Recovery_NotePhysResume(const char* stall, const char* report);
-    void Recovery_NotePhysResolve(const int* ents, int n, const char* report); // frozen entity indices for the hook
-    void Recovery_NoteRecovered(const char* method, uint64_t downtimeMs, const char* stall, const char* reason, const char* report);
-    const char* StallClassName(int cls);
-
     struct CCLuaFrame {
         int level;
         int currentline;
@@ -156,61 +148,94 @@ namespace CrashCapture {
         int frameCount;
         CCLuaFrame frames[24];
     };
-    int Lua_CaptureTraces(CCLuaTrace* out, int maxRealms);
 
-    // --------- cc-physhook (Linux x86: detour IVP to prevent physics hangs) ---
-    void PhysHook_Init();
-    bool PhysHook_Install();
-    void PhysHook_Uninstall();
-    uint64_t PhysHook_LagEpisodes();
+    namespace Lua {
+        void OnInit(void* iface);
+        void OnShutdown(void* iface);
+        void MarkModuleLoad();
+        bool HasBoundRealms();
+        void RefreshStates();
+        void Dump();
+        bool BreakLoop(const char* msg);
+        int  ArmBreakHook();
+        void InstallHeartbeat(void* iface);
+        void InstallHeartbeatAll();
+        void InstallApi(void* iface);
+        bool EnsureApi();
+        bool InstallSideloadBootstrap();
+        void* SharedHandle();
+        void* Sym(void* mod, const char* name);
+        void PollRecovery();
+        void PollReady();
+        int  CaptureTraces(CCLuaTrace* out, int maxRealms);
+    }
+
+    // --------- cc-recovery ---
+    namespace Recovery {
+        void NotePhysResume(const char* stall, const char* report);
+        void NotePhysResolve(const int* ents, int n, const char* report);
+        void NoteRecovered(const char* method, uint64_t downtimeMs, const char* stall, const char* reason, const char* report);
+    }
+
+    // --------- cc-physhook (Linux: detour IVP to prevent physics hangs) ---
+    namespace Phys {
+        namespace Bind { // IVP detour install/remove (named Bind so it doesn't shadow tools Hook::)
+            void Init();
+            bool Install();
+            void Uninstall();
+            uint64_t LagEpisodes();
+        }
+    }
 
     // --------- cc-diag ---
-    void Diag_Section(void* nativeCtx);
+    namespace Diag { void Section(void* nativeCtx); }
 
     // --------- cc-platform-handlers ---
-    void Platform_Install();
-    void Platform_Uninstall();
-    void Platform_DumpThread(const char* kind, const char* reason);
-    int Platform_Backtrace(void* ctx, uintptr_t* out, int max);
-    uintptr_t Platform_ContextPC(void* ctx);
-    bool Platform_IsGameThread();
-
     // there are different kinds of classified stalls/hangs now.
     enum StallClass { STALL_UNKNOWN = 0, STALL_NATIVE, STALL_PHYSICS, STALL_LUA_INTERP, STALL_LUA_JIT };
     extern volatile int g_lastStallClass;
-    int Report_ClassifyStall(void* ctx, char* out, size_t outsz);
-    int Platform_RequestLuaBreak();
-    int Platform_RequestPhysResolve(const char* kind, const char* reason, bool writeReport); // classify(+dump if writeReport)+resume-if-physics (1 resumed, 0 handled-no-resume, <0 failed)
-    int Platform_SetPhysPaused(int paused);
-    int Platform_PhysPaused();
 
-    typedef void (*SectionFn)(void* arg);
-    bool RunProtected(SectionFn fn, void* arg);
-    bool RunProtectedQuiet(SectionFn fn, void* arg);
+    namespace Platform {
+        void Install();
+        void Uninstall();
+        void DumpThread(const char* kind, const char* reason);
+        int  Backtrace(void* ctx, uintptr_t* out, int max);
+        uintptr_t ContextPC(void* ctx);
+        bool IsGameThread();
+        int  EnumThreads(CCThread* out, int max);
+        int  RequestLuaBreak();
+        int  RequestPhysResolve(const char* kind, const char* reason, bool writeReport); // classify(+dump if writeReport)+resume-if-physics (1 resumed, 0 handled-no-resume, <0 failed)
+        int  SetPhysPaused(int paused);
+        int  PhysPaused();
+    }
 
-    void Report_Registers(void* ctx);
-    void Report_NativeStack(void* ctx);
-    void Report_StackScan(void* ctx);
+    // --------- cc-report ---
+    namespace Report {
+        int  ClassifyStall(void* ctx, char* out, size_t outsz);
+        void Registers(void* ctx);
+        void NativeStack(void* ctx);
+        void StackScan(void* ctx);
+        const char* Meme();
+        void Header(const char* kind, const char* reason);
+        void Banner(const char* kind, const char* reason, const char* reportPath); // console-only banner; NULL path = no "report :" line
+        void Footer();
+        void SetContext(const char* kind, const char* reason, uintptr_t fault);
+        const char* Kind();
+        const char* Reason();
+        uintptr_t Fault();
+        uint64_t Uptime();
+        void Section(const char* title, SectionFn fn, void* arg, bool fenced);
+    }
 
-    // --------- cc-shared ---
-    const char* Report_Meme();
-    void Report_Header(const char* kind, const char* reason);
-    void Report_Banner(const char* kind, const char* reason, const char* reportPath); // console-only banner; NULL path = no "report :" line
-    void Report_Footer();
-    void Report_SetContext(const char* kind, const char* reason, uintptr_t fault);
-    const char* Report_Kind();
-    const char* Report_Reason();
-    uintptr_t Report_Fault();
-    uint64_t Report_Uptime();
-    void Report_Section(const char* title, SectionFn fn, void* arg, bool fenced);
-    uint64_t MonotonicMs();
-    void UtcStamp(char* out, size_t outsz);
-
-    void Watchdog_Start(bool deferredArm);
-    void Watchdog_Stop();
-    void Watchdog_Pulse();
+    // --------- cc-watchdog ---
+    namespace Watchdog {
+        void Start(bool deferredArm);
+        void Stop();
+        void Pulse();
+    }
     extern volatile uint64_t g_lastPulseMs;
     extern volatile uint64_t g_graceUntilMs;
+    extern volatile uint64_t g_graceAnchorPulse;
 
     #if defined(CC_WINDOWS)
         extern void* g_gameThreadHandle;

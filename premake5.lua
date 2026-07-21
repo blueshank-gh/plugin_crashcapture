@@ -34,7 +34,7 @@ local function setup(params)
             objdir ("bin-int/%{prj.name}/%{cfg.platform}/%{cfg.buildcfg}")
             targetname ("plugin_crashcapture" .. params.bitness .. params.prefix)
 
-            files { "src/**.cpp", "src/**.h" }
+            files { "src/**.cpp", "src/**.h", "src/**.hpp" }
             includedirs { "src" }
 
             filter "system:windows"

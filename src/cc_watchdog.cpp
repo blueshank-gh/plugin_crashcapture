@@ -3,7 +3,7 @@
 // If the pulse stops advancing for longer than the timeout, the game thread is considered stuck.
 
 #include "crashcapture.h"
-#include "cc_physrecover.h"
+#include "features/cc_physrecover.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -22,6 +22,7 @@
 namespace CrashCapture {
     volatile uint64_t g_lastPulseMs = 0;
     volatile uint64_t g_graceUntilMs = 0;
+    volatile uint64_t g_graceAnchorPulse = 0;
 
     static volatile bool g_running = false;
     static volatile bool g_stop = false;
@@ -50,7 +51,7 @@ namespace CrashCapture {
         #endif
     }
 
-    void Watchdog_Pulse()
+    void Watchdog::Pulse()
     {
         if (g_lastPulseMs == 0) {
             // first pulse: remember which thread the heartbeat comes from...
@@ -63,7 +64,7 @@ namespace CrashCapture {
                 g_gameThreadPthread = (unsigned long)pthread_self();
                 g_gameThreadTid = (int)syscall(SYS_gettid);
             #endif
-            Log::F("[CrashCapture] heartbeat bound to game thread (id=%llu)\n",
+            Log::F("[Crash Capture] heartbeat bound to game thread (id=%llu)\n",
             #if defined(CC_WINDOWS)
                    (unsigned long long)g_gameThreadId);
             #else
@@ -84,28 +85,28 @@ namespace CrashCapture {
                            (now - g_lastReportMs) >= (uint64_t)Cfg().report_debounce_sec * 1000ull;
         bool physResolved = false;
         bool handled = false;
-    #if defined(CC_LINUX)
-        Log::Debug("[CC-PHYS] hang fired: phys_recover=%d writeReport=%d (class pre-dump=%d)\n",
-                    (int)Cfg().phys_recover, (int)writeReport, g_lastStallClass);
-        if (Cfg().phys_recover) {
-            int r = Platform_RequestPhysResolve("hang", reason, writeReport);
-            Log::Debug("[CC-PHYS] resolve returned r=%d (class post-dump=%d)\n", r, g_lastStallClass);
-            if (r >= 0) handled = true;
-            if (r == 1) {                // resumed out of a physics hang
-                physResolved = true;
-                snprintf(g_hangMethod, sizeof(g_hangMethod), "physresolve");
-                Log::Str("[CrashCapture] hang: targeted physics recovery attempted.\n");
+        #if defined(CC_LINUX)
+            Log::Debug("[CC-PHYS] hang fired: phys_recover=%d writeReport=%d (class pre-dump=%d)\n",
+                        (int)Cfg().phys_recover, (int)writeReport, g_lastStallClass);
+            if (Cfg().phys_recover) {
+                int r = Platform::RequestPhysResolve("hang", reason, writeReport);
+                Log::Debug("[CC-PHYS] resolve returned r=%d (class post-dump=%d)\n", r, g_lastStallClass);
+                if (r >= 0) handled = true;
+                if (r == 1) {                // resumed out of a physics hang
+                    physResolved = true;
+                    snprintf(g_hangMethod, sizeof(g_hangMethod), "physresolve");
+                    Log::Str("[Crash Capture] hang: targeted physics recovery attempted.\n");
+                }
             }
-        }
-    #endif
+        #endif
         if (!handled && writeReport)
-            Platform_DumpThread("hang", reason);
+            Platform::DumpThread("hang", reason);
 
         if (writeReport) {
             g_lastReportMs = now;
             snprintf(g_hangReportPath, sizeof(g_hangReportPath), "%s", Log::Path());
         } else {
-            Log::Str("[CrashCapture] hang: recovered again; report suppressed (debounced).\n");
+            Log::Str("[Crash Capture] hang: recovered again; report suppressed (debounced).\n");
         }
         snprintf(g_hangReason, sizeof(g_hangReason), "%s", reason ? reason : "");
         g_hangPending = true;
@@ -113,10 +114,10 @@ namespace CrashCapture {
         // only worth arming the Lua loop-break when the stall is actually in Lua...
         if (Cfg().loopbreak && !physResolved) {
             if (g_lastStallClass == STALL_NATIVE || g_lastStallClass == STALL_PHYSICS) {
-                Log::Str("[CrashCapture] hang: stall is not in Lua, loop-break skipped.\n");
-            } else if (Lua_BreakLoop("CrashCapture: breaking suspected infinite loop")) {
+                Log::Str("[Crash Capture] hang: stall is not in Lua, loop-break skipped.\n");
+            } else if (Lua::BreakLoop("Crash Capture: breaking suspected infinite loop")) {
                 snprintf(g_hangMethod, sizeof(g_hangMethod), "loopbreak");
-                Log::Str("[CrashCapture] hang: requested Lua loop-break.\n");
+                Log::Str("[Crash Capture] hang: requested Lua loop-break.\n");
             }
         }
     }
@@ -126,21 +127,21 @@ namespace CrashCapture {
         if (!g_hangPending) return;
         g_hangPending = false;
         uint64_t dur = now - g_hangStartMs;
-        Log::Notice("[CrashCapture] game thread recovered after %llu ms\n", (unsigned long long)dur);
+        Log::Notice("[Crash Capture] game thread recovered after %llu ms\n", (unsigned long long)dur);
         char note[512];
         snprintf(note, sizeof(note),
                  "\n---\n\n> **RECOVERY**: the game thread resumed %llu ms after this "
                  "report was written.",
                  (unsigned long long)dur);
         Log::AppendNote(g_hangReportPath, note);
-        Recovery_NoteRecovered(g_hangMethod, dur, StallClassName(g_lastStallClass), g_hangReason, g_hangReportPath);
+        Recovery::NoteRecovered(g_hangMethod, dur, StallClassName(g_lastStallClass), g_hangReason, g_hangReportPath);
 
         #if defined(CC_LINUX)
-            if (PhysRecover_Available()) {
+            if (Phys::Recover::Available()) {
                 int ents[32];
-                int n = PhysRecover_FrozenEntities(ents, 32);
-                if (n > 0) Recovery_NotePhysResolve(ents, n, g_hangReportPath);
-                PhysRecover_Reset();
+                int n = Phys::Recover::FrozenEntities(ents, 32);
+                if (n > 0) Recovery::NotePhysResolve(ents, n, g_hangReportPath);
+                Phys::Recover::Reset();
             }
         #endif
     }
@@ -150,7 +151,7 @@ namespace CrashCapture {
     {
         if (Cfg().hang_kill_sec > 0 &&
             now - g_hangStartMs > (uint64_t)Cfg().hang_kill_sec * 1000ull) {
-            Log::F("[CrashCapture] hang persisted %ds past first dump; terminating process.\n",
+            Log::F("[Crash Capture] hang persisted %ds past first dump; terminating process.\n",
                    Cfg().hang_kill_sec);
             Log::Flush();
             #if defined(CC_WINDOWS)
@@ -275,7 +276,7 @@ namespace CrashCapture {
                 if (!g_winSawAlive) { // first time the engine window is responsive
                     g_winSawAlive = true;
                     BindThread(U.GetWindowThreadProcessId(hwnd, NULL));
-                    Log::F("[CrashCapture] watching game window %p (class Valve*) for hangs.\n",
+                    Log::F("[Crash Capture] watching game window %p (class Valve*) for hangs.\n",
                            (void*)hwnd);
                 }
                 if (g_winHung) NoteRecovery(now);
@@ -310,7 +311,7 @@ namespace CrashCapture {
         // deferred arm for client preload, stay inert until a "lua" module is mapped.
         if (g_deferredArm) {
             while (!g_stop) {
-                if (Modules_HasLua()) break;
+                if (Modules::HasLua()) break;
                 SleepMs(250);
             }
             if (g_stop) { g_running = false; return; }
@@ -326,7 +327,8 @@ namespace CrashCapture {
 
             uint64_t now = MonotonicMs();
 
-            if (g_graceUntilMs && g_lastPulseMs && now - g_lastPulseMs < (uint64_t)timeout * 1000ull)
+            if (g_graceUntilMs && g_lastPulseMs && g_lastPulseMs != g_graceAnchorPulse &&
+                now - g_lastPulseMs < (uint64_t)timeout * 1000ull)
                 g_graceUntilMs = 0;
 
             if (now < g_graceUntilMs) continue; // inside a known stall (map change)
@@ -349,7 +351,7 @@ namespace CrashCapture {
         static void* ThreadEntry(void*) { WatchdogLoop(); return NULL; }
     #endif
 
-    void Watchdog_Start(bool deferredArm)
+    void Watchdog::Start(bool deferredArm)
     {
         if (g_running) return;
         g_stop = false;
@@ -366,7 +368,7 @@ namespace CrashCapture {
         #endif
     }
 
-    void Watchdog_Stop()
+    void Watchdog::Stop()
     {
         if (!g_running && !g_stop) return;
         g_stop = true;

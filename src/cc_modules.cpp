@@ -53,7 +53,7 @@ namespace CrashCapture {
             out[n] = 0;
         }
 
-        int Modules_Refresh()
+        int Modules::Refresh()
         {
             g_moduleCount = 0;
 
@@ -83,7 +83,7 @@ namespace CrashCapture {
             return g_moduleCount;
         }
 
-        bool Mem_IsReadable(const void* p, size_t n)
+        bool Mem::IsReadable(const void* p, size_t n)
         {
             if (!p) return false;
             MEMORY_BASIC_INFORMATION mbi;
@@ -99,7 +99,7 @@ namespace CrashCapture {
             return true;
         }
 
-        bool Mem_IsExecutable(uintptr_t addr)
+        bool Mem::IsExecutable(uintptr_t addr)
         {
             MEMORY_BASIC_INFORMATION mbi;
             if (!VirtualQuery((void*)addr, &mbi, sizeof(mbi))) return false;
@@ -126,7 +126,7 @@ namespace CrashCapture {
             return v;
         }
 
-        int Modules_Refresh()
+        int Modules::Refresh()
         {
             g_moduleCount = 0;
 
@@ -203,7 +203,7 @@ namespace CrashCapture {
             return g_moduleCount;
         }
 
-        bool Mem_IsReadable(const void* p, size_t n)
+        bool Mem::IsReadable(const void* p, size_t n)
         {
             if (!p) return false;
             // msync on the containing page(s) returns ENOMEM for unmapped memory and is
@@ -219,16 +219,16 @@ namespace CrashCapture {
             return true;
         }
 
-        bool Mem_IsExecutable(uintptr_t addr)
+        bool Mem::IsExecutable(uintptr_t addr)
         {
-            const CCModule* m = Modules_Find(addr);
+            const CCModule* m = Modules::Find(addr);
             return m != NULL; // file-backed exec ranges only enter the table
         }
     #endif
 
-    bool Modules_HasLua()
+    bool Modules::HasLua()
     {
-        Modules_Refresh();
+        Modules::Refresh();
         for (int i = 0; i < g_moduleCount; ++i) {
             for (const char* p = g_modules[i].name; p[0] && p[1] && p[2]; ++p) {
                 if ((p[0] == 'l' || p[0] == 'L') &&
@@ -240,7 +240,7 @@ namespace CrashCapture {
         return false;
     }
 
-    const CCModule* Modules_Find(uintptr_t addr)
+    const CCModule* Modules::Find(uintptr_t addr)
     {
         for (int i = 0; i < g_moduleCount; ++i) {
             const CCModule& m = g_modules[i];
@@ -249,7 +249,7 @@ namespace CrashCapture {
         return NULL;
     }
 
-    const CCModule* Modules_FindByName(const char* needle)
+    const CCModule* Modules::FindByName(const char* needle)
     {
         if (!needle || !*needle) return NULL;
         for (int i = 0; i < g_moduleCount; ++i) {
@@ -270,7 +270,7 @@ namespace CrashCapture {
         return NULL;
     }
 
-    int Modules_Snapshot(const CCModule** out)
+    int Modules::Snapshot(const CCModule** out)
     {
         if (out) *out = g_modules;
         return g_moduleCount;
@@ -278,12 +278,12 @@ namespace CrashCapture {
 
     void FormatAddress(uintptr_t addr, char* out, size_t outsz)
     {
-        const CCModule* m = Modules_Find(addr);
+        const CCModule* m = Modules::Find(addr);
         int w;
         if (m)
             w = snprintf(out, outsz, "%s+0x%llx (0x%llx)",
                         m->name, (unsigned long long)(addr - m->base), (unsigned long long)addr);
-        else if (addr && Mem_IsExecutable(addr)) // exec but no module: likely JIT mcode
+        else if (addr && Mem::IsExecutable(addr)) // exec but no module: likely JIT mcode
             w = snprintf(out, outsz, "0x%llx <JIT mcode? (anon exec)>", (unsigned long long)addr);
         else
             w = snprintf(out, outsz, "0x%llx <unmapped>", (unsigned long long)addr);
@@ -291,12 +291,12 @@ namespace CrashCapture {
         // Append symbol/file:line when resolvable (only modules carry symbols)
         if (m && w > 0 && (size_t)w < outsz) {
             char sym[400];
-            if (Sym_Resolve(addr, sym, sizeof(sym)))
+            if (Sym::Resolve(addr, sym, sizeof(sym)))
                 snprintf(out + w, outsz - (size_t)w, "  %s", sym);
         }
     }
 
-    void Modules_Dump()
+    void Modules::Dump()
     {
         Log::F("loaded modules: %d\n\n", g_moduleCount);
         Log::Str("| base | end | size | name |\n");

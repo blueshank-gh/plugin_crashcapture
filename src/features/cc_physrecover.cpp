@@ -1,8 +1,8 @@
 // cc_physrecover - all physics crash/hang recovery.
 // Linux only, no we are not doing windows.
 
-#include "cc_physrecover.h"
-#include "cc_signature.h"
+#include "features/cc_physrecover.h"
+#include "tools/cc_signature.h"
 
 #if defined(CC_LINUX)
 
@@ -85,14 +85,14 @@ namespace CrashCapture {
     #endif
     };
 
-    void PhysRecover_Init()
+    void Phys::Recover::Init()
     {
-        Sig_Register(kPhysTargets, (int)(sizeof(kPhysTargets) / sizeof(kPhysTargets[0])));
+        Sig::Register(kPhysTargets, (int)(sizeof(kPhysTargets) / sizeof(kPhysTargets[0])));
     }
 
-    static uintptr_t Vptr() { return Sig_Get("physobj.vptr"); }
+    static uintptr_t Vptr() { return Sig::Get("physobj.vptr"); }
 
-    bool PhysRecover_Available() { return Vptr() != 0; }
+    bool Phys::Recover::Available() { return Vptr() != 0; }
 
     static void* PhysFrameStart(); // resolves server.so PhysFrame start
     static void RestorePhysEnvState(); // un-defers deletes after an abandoned Simulate
@@ -108,11 +108,11 @@ namespace CrashCapture {
 
     static bool* PhysPausedSlot()
     {
-        bool* m_bPaused = (bool*)Sig_Get("phys.paused_byte");
-        return (m_bPaused && Mem_IsReadable(m_bPaused, sizeof(bool))) ? m_bPaused : NULL;
+        bool* m_bPaused = (bool*)Sig::Get("phys.paused_byte");
+        return (m_bPaused && Mem::IsReadable(m_bPaused, sizeof(bool))) ? m_bPaused : NULL;
     }
 
-    int Platform_SetPhysPaused(int paused)
+    int Platform::SetPhysPaused(int paused)
     {
         bool* slot = PhysPausedSlot();
         if (!slot) return 0;
@@ -120,7 +120,7 @@ namespace CrashCapture {
         return 1;
     }
 
-    int Platform_PhysPaused()
+    int Platform::PhysPaused()
     {
         bool* slot = PhysPausedSlot();
         return slot ? (*slot ? 1 : 0) : -1;
@@ -130,16 +130,16 @@ namespace CrashCapture {
     static int* EventLoopMode()
     {
     #if defined(CC_X86)
-        uintptr_t slot = Sig_Get("phys.env_slot"); // &physenv
-        if (!slot || !Mem_IsReadable((void*)slot, sizeof(void*))) return NULL;
+        uintptr_t slot = Sig::Get("phys.env_slot"); // &physenv
+        if (!slot || !Mem::IsReadable((void*)slot, sizeof(void*))) return NULL;
         uintptr_t env = *(uintptr_t*)slot; // CPhysicsEnvironment*
-        if (!env || !Mem_IsReadable((void*)(env + 4), sizeof(void*))) return NULL;
+        if (!env || !Mem::IsReadable((void*)(env + 4), sizeof(void*))) return NULL;
         uintptr_t ivpEnv = *(uintptr_t*)(env + 4); // IVP_Environment* CPhysEnv[1]
-        if (!ivpEnv || !Mem_IsReadable((void*)(ivpEnv + 4), sizeof(void*))) return NULL;
+        if (!ivpEnv || !Mem::IsReadable((void*)(ivpEnv + 4), sizeof(void*))) return NULL;
         uintptr_t tmgr = *(uintptr_t*)(ivpEnv + 4); // IVP_Time_Manager* IVP_Env[1]
-        if (!tmgr || !Mem_IsReadable((void*)(tmgr + 4), sizeof(void*))) return NULL;
+        if (!tmgr || !Mem::IsReadable((void*)(tmgr + 4), sizeof(void*))) return NULL;
         uintptr_t emgr = *(uintptr_t*)(tmgr + 4); // IVP_Event_Manager* time_mgr[1]
-        if (!emgr || !Mem_IsReadable((void*)(emgr + 4), sizeof(int))) return NULL;
+        if (!emgr || !Mem::IsReadable((void*)(emgr + 4), sizeof(int))) return NULL;
         return (int*)(emgr + 4); // &mode event_mgr[1]
     #else
         return NULL;
@@ -150,16 +150,16 @@ namespace CrashCapture {
     static bool MinListStats(uint32_t* countOut, uint32_t* capOut, uintptr_t* listOut)
     {
         #if defined(CC_X86)
-            uintptr_t slot = Sig_Get("phys.env_slot");
-            if (!slot || !Mem_IsReadable((void*)slot, 4)) return false;
+            uintptr_t slot = Sig::Get("phys.env_slot");
+            if (!slot || !Mem::IsReadable((void*)slot, 4)) return false;
             uintptr_t env = *(uintptr_t*)slot;
-            if (!env || !Mem_IsReadable((void*)(env + 4), 4)) return false;
+            if (!env || !Mem::IsReadable((void*)(env + 4), 4)) return false;
             uintptr_t ivpEnv = *(uintptr_t*)(env + 4);
-            if (!ivpEnv || !Mem_IsReadable((void*)(ivpEnv + 4), 4)) return false;
+            if (!ivpEnv || !Mem::IsReadable((void*)(ivpEnv + 4), 4)) return false;
             uintptr_t tmgr = *(uintptr_t*)(ivpEnv + 4);
-            if (!tmgr || !Mem_IsReadable((void*)(tmgr + 8), 4)) return false;
+            if (!tmgr || !Mem::IsReadable((void*)(tmgr + 8), 4)) return false;
             uintptr_t mh = *(uintptr_t*)(tmgr + 8);            // min_hash (the IVP_U_Min_List)
-            if (!mh || !Mem_IsReadable((void*)mh, 24)) return false;
+            if (!mh || !Mem::IsReadable((void*)mh, 24)) return false;
             if (countOut) *countOut = *(uint32_t*)(mh + 20);
             if (capOut)   *capOut   = *(uint16_t*)(mh + 0);
             if (listOut)  *listOut  = mh;
@@ -180,7 +180,7 @@ namespace CrashCapture {
     }
 
     // cc_physhook bridge for mid-tick on the game thread when the hook skips a runaway mindist
-    void PhysRecover_NoteHookLag(uintptr_t mindist)
+    void Phys::Recover::NoteHookLag(uintptr_t mindist)
     {
         if (!mindist || (mindist & (sizeof(void*) - 1))) return;
         RawIvpAdd(*(uintptr_t*)(mindist + kMindistObj0));
@@ -194,11 +194,11 @@ namespace CrashCapture {
     {
         #if defined(CC_X86)
             uintptr_t mh = ((ResetArgs*)arg)->mh;
-            if (!mh || !Mem_IsReadable((void*)mh, 24)) return;
+            if (!mh || !Mem::IsReadable((void*)mh, 24)) return;
             uint32_t cap = *(uint16_t*)(mh + 0); // malloced_size (capacity)
             uintptr_t elems = *(uintptr_t*)(mh + 4); // slot array
             uint32_t before = *(uint32_t*)(mh + 20); // live count (may exceed cap)
-            if (!cap || !elems || !Mem_IsReadable((void*)elems, (size_t)cap * 16))
+            if (!cap || !elems || !Mem::IsReadable((void*)elems, (size_t)cap * 16))
                 return;
 
             // clear each in-use slot's mindist back-link
@@ -223,7 +223,7 @@ namespace CrashCapture {
             *(uint32_t*)(mh + 12) = 0xFFFF; // first_long = none
             *(uint32_t*)(mh + 16) = 0xFFFF; // first_element = none
             *(uint32_t*)(mh + 20) = 0; // live count = 0
-            Log::F("[CrashCapture] phys recover: reset saturated event queue "
+            Log::F("[Crash Capture] phys recover: reset saturated event queue "
                 "(mh=0x%lx cap=%u, was count=%u, cleared %d mindist back-links).\n",
                 (unsigned long)mh, cap, before, cleared);
         #else
@@ -266,7 +266,7 @@ namespace CrashCapture {
 
     static bool PtrOk(uintptr_t p)
     {
-        return p && !(p & (sizeof(void*) - 1)) && Mem_IsReadable((void*)p, sizeof(void*));
+        return p && !(p & (sizeof(void*) - 1)) && Mem::IsReadable((void*)p, sizeof(void*));
     }
 
     static uintptr_t AsPhysObject(uintptr_t p)
@@ -276,11 +276,11 @@ namespace CrashCapture {
         if (*(uintptr_t*)p == vptr) return p; // direct CPhysicsObject
 
         uintptr_t slot = p + kIvpToObj;
-        if (!Mem_IsReadable((void*)slot, sizeof(void*))) return 0;
+        if (!Mem::IsReadable((void*)slot, sizeof(void*))) return 0;
         uintptr_t obj = *(uintptr_t*)slot;
         if (!PtrOk(obj) || *(uintptr_t*)obj != vptr) return 0;
         uintptr_t back = obj + kObjIvp; // back-link must agree
-        if (!Mem_IsReadable((void*)back, sizeof(void*)) || *(uintptr_t*)back != p) return 0;
+        if (!Mem::IsReadable((void*)back, sizeof(void*)) || *(uintptr_t*)back != p) return 0;
         return obj;
     }
 
@@ -298,7 +298,7 @@ namespace CrashCapture {
         ScanArgs* sa = (ScanArgs*)arg;
         uintptr_t a = sa->lo & ~(uintptr_t)(sizeof(void*) - 1);
         for (; a + sizeof(void*) <= sa->hi; a += sizeof(void*)) {
-            if (!Mem_IsReadable((void*)a, sizeof(void*))) {
+            if (!Mem::IsReadable((void*)a, sizeof(void*))) {
                 a = (a & ~(uintptr_t)0xFFF) + 0x1000 - sizeof(void*); // skip to next page
                 continue;
             }
@@ -311,7 +311,7 @@ namespace CrashCapture {
         }
     }
 
-    bool PhysRecover_MarkOffender(uintptr_t spLo, uintptr_t spHi)
+    bool Phys::Recover::MarkOffender(uintptr_t spLo, uintptr_t spHi)
     {
         if (!Vptr()) return false;
         ScanArgs sa = {spLo, spHi, 0};
@@ -319,16 +319,16 @@ namespace CrashCapture {
         return sa.queued > 0;
     }
 
-    int PhysRecover_PendingCount() { return g_nPending; }
+    int Phys::Recover::PendingCount() { return g_nPending; }
 
     static int ObjEntIndex(uintptr_t obj)
     {
         uintptr_t gd = obj + kObjGameData;
-        if (!Mem_IsReadable((void*)gd, sizeof(void*))) return -1;
+        if (!Mem::IsReadable((void*)gd, sizeof(void*))) return -1;
         uintptr_t ent = *(uintptr_t*)gd;
         if (!ent) return -1;
         uintptr_t h = ent + kEntHandle;
-        if (!Mem_IsReadable((void*)h, sizeof(uint32_t))) return -1;
+        if (!Mem::IsReadable((void*)h, sizeof(uint32_t))) return -1;
         return (int)(*(uint32_t*)h & kEntEntryMask);
     }
 
@@ -337,7 +337,7 @@ namespace CrashCapture {
     {
         if (!kObjShadow) return false;
         uintptr_t shSlot = obj + kObjShadow;
-        if (!Mem_IsReadable((void*)shSlot, sizeof(void*))) return true; // unreadable -> don't touch
+        if (!Mem::IsReadable((void*)shSlot, sizeof(void*))) return true; // unreadable -> don't touch
         return *(uintptr_t*)shSlot != 0;
     }
 
@@ -348,17 +348,17 @@ namespace CrashCapture {
         if (!kIvpCore) return false; // object model not reversed for this arch
 
         uintptr_t ivpSlot = obj + kObjIvp;
-        if (!Mem_IsReadable((void*)ivpSlot, sizeof(void*))) return false;
+        if (!Mem::IsReadable((void*)ivpSlot, sizeof(void*))) return false;
         uintptr_t ivp = *(uintptr_t*)ivpSlot;
         if (!PtrOk(ivp)) return false;
 
         uintptr_t coreSlot = ivp + kIvpCore;
-        if (!Mem_IsReadable((void*)coreSlot, sizeof(void*))) return false;
+        if (!Mem::IsReadable((void*)coreSlot, sizeof(void*))) return false;
         uintptr_t core = *(uintptr_t*)coreSlot;
 
         // must cover the highest field we store (speed vs rot_speed swap order by arch)
         const int hi = (kCoreSpeed > kCoreRotSpeed ? kCoreSpeed : kCoreRotSpeed) + 3 * (int)sizeof(uint32_t);
-        if (!PtrOk(core) || !Mem_IsReadable((void*)core, (size_t)hi))
+        if (!PtrOk(core) || !Mem::IsReadable((void*)core, (size_t)hi))
             return false;
 
         unsigned char* flags = (unsigned char*)core;
@@ -397,7 +397,7 @@ namespace CrashCapture {
         }
     }
 
-    int PhysRecover_FreezeQueued()
+    int Phys::Recover::FreezeQueued()
     {
         FreezeArgs fa = {0};
         RunProtectedQuiet(FreezeQueuedInner, &fa);
@@ -405,7 +405,7 @@ namespace CrashCapture {
         return fa.frozen;
     }
 
-    int PhysRecover_FrozenEntities(int* out, int max)
+    int Phys::Recover::FrozenEntities(int* out, int max)
     {
         int n = g_nFrozenEnt < max ? g_nFrozenEnt : max;
         for (int i = 0; i < n; ++i) out[i] = g_frozenEnt[i];
@@ -424,10 +424,10 @@ namespace CrashCapture {
         return false;
     }
 
-    void PhysRecover_PollGameThread()
+    void Phys::Recover::PollGameThread()
     {
         PhysFrameStart();
-        if (Cfg().phys_hook) PhysHook_Install();
+        if (Cfg().phys_hook) Phys::Bind::Install();
 
         // undo the drain-loop escape from mode=1
         if (g_modeForced) {
@@ -448,20 +448,20 @@ namespace CrashCapture {
             g_nRawIvp = 0;
             int frozen = 0;
             if (g_nPending > 0) {
-                frozen = PhysRecover_FreezeQueued();
+                frozen = Phys::Recover::FreezeQueued();
                 if (frozen > 0) {
                     int ents[kMaxPhys];
-                    int nEnt = PhysRecover_FrozenEntities(ents, kMaxPhys);
-                    if (nEnt > 0) Recovery_NotePhysResolve(ents, nEnt, NULL);
+                    int nEnt = Phys::Recover::FrozenEntities(ents, kMaxPhys);
+                    if (nEnt > 0) Recovery::NotePhysResolve(ents, nEnt, NULL);
                     if (!b_BannerDebounce)
-                        Log::F("[CrashCapture] phys hook: runaway physics tick prevented, %d offender(s).\n", frozen);
+                        Log::F("[Crash Capture] phys hook: runaway physics tick prevented, %d offender(s).\n", frozen);
                 }
             }
             
             if (b_BannerDebounce) {
                 char reason[176];
                 snprintf(reason, sizeof(reason), "vphysics mindist tick overran %dms, %d offender(s)", Cfg().phys_hook_ms, frozen);
-                Report_Banner("hang - physics (vphysics)", reason, NULL);
+                Report::Banner("hang - physics (vphysics)", reason, NULL);
             }
         }
 
@@ -474,13 +474,13 @@ namespace CrashCapture {
             }
             g_nRawIvp = 0;
             if (added)
-                Log::F("[CrashCapture] phys recover: queued %d exploding object(s) from the saturated queue's mindists (total pending=%d).\n", added, g_nPending);
+                Log::F("[Crash Capture] phys recover: queued %d exploding object(s) from the saturated queue's mindists (total pending=%d).\n", added, g_nPending);
         }
 
         if (g_nPending > 0) {
-            if (PhysRecover_FreezeQueued() == 0 && g_pluginPaused) {
+            if (Phys::Recover::FreezeQueued() == 0 && g_pluginPaused) {
                 g_pluginPaused = false; // pause stays ON, simply stop managing it
-                Log::F("[CrashCapture] phys recover: no offender to act on, leaving physics paused.\n");
+                Log::F("[Crash Capture] phys recover: no offender to act on, leaving physics paused.\n");
                 return;
             }
         }
@@ -488,14 +488,14 @@ namespace CrashCapture {
         if (g_giveUp) {
             g_nPending = 0;
             if (g_pluginPaused) {
-                Platform_SetPhysPaused(1);
+                Platform::SetPhysPaused(1);
                 g_pluginPaused = false; // pause is now permanent, stop managing it, physenv.SetPhysicsPaused can undo this.
                 if (g_giveUpEnt == -2)
-                    Log::Notice("[CrashCapture] phys recover: still re-saturating after %d recoveries "
+                    Log::Notice("[Crash Capture] phys recover: still re-saturating after %d recoveries "
                                 "in %llums, giving up targeted recovery, physics left paused.\n",
                                 kRecWindowMax, (unsigned long long)kRecWindowMs);
                 else
-                    Log::Notice("[CrashCapture] phys recover: entity %d still hanging after %d recovery "
+                    Log::Notice("[Crash Capture] phys recover: entity %d still hanging after %d recovery "
                                 "attempts, giving up targeted recovery, physics left paused.\n",
                                 g_giveUpEnt, kMaxRepins);
             }
@@ -503,13 +503,13 @@ namespace CrashCapture {
         }
 
         if (g_pluginPaused && g_nPending == 0) {
-            Platform_SetPhysPaused(0);
+            Platform::SetPhysPaused(0);
             g_pluginPaused = false;
-            Log::F("[CrashCapture] phys recover: physics unpaused%s.\n", Cfg().phys_pin ? " (offenders frozen)" : "");
+            Log::F("[Crash Capture] phys recover: physics unpaused%s.\n", Cfg().phys_pin ? " (offenders frozen)" : "");
         }
     }
 
-    void PhysRecover_Reset()
+    void Phys::Recover::Reset()
     {
         g_nPending = g_nFrozen = g_nFrozenEnt = 0;
         g_physResumeCount = 0;
@@ -533,11 +533,11 @@ namespace CrashCapture {
     static void* PhysFrameStart()
     {
         if (!g_physFrameStart) {
-            uintptr_t code = Sig_Get("phys.frame_code");
+            uintptr_t code = Sig::Get("phys.frame_code");
             if (code) {
                 g_physFrameStart = _Unwind_FindEnclosingFunction((void*)code);
-                Modules_Refresh();
-                const CCModule* m = g_physFrameStart ? Modules_Find((uintptr_t)g_physFrameStart) : NULL;
+                Modules::Refresh();
+                const CCModule* m = g_physFrameStart ? Modules::Find((uintptr_t)g_physFrameStart) : NULL;
                 if (m) { g_physModBase = m->base; g_physModEnd = m->base + m->size; }
             }
         }
@@ -602,21 +602,21 @@ namespace CrashCapture {
     static void RestorePhysEnvState()
     {
         if (kEnvInSim) {
-            uintptr_t slot = Sig_Get("phys.env_slot"); // &physenv
-            if (slot && Mem_IsReadable((void*)slot, sizeof(void*))) {
+            uintptr_t slot = Sig::Get("phys.env_slot"); // &physenv
+            if (slot && Mem::IsReadable((void*)slot, sizeof(void*))) {
                 uintptr_t env = *(uintptr_t*)slot;
-                if (env && Mem_IsReadable((void*)(env + kEnvInSim), 1))
+                if (env && Mem::IsReadable((void*)(env + kEnvInSim), 1))
                     *(unsigned char*)(env + kEnvInSim) = 0; // clear m_inSimulation
             }
         }
-        uintptr_t sem = Sig_Get("phys.remove_sem"); // &s_RemoveImmediateSemaphore
-        if (sem && Mem_IsReadable((void*)sem, sizeof(int))) {
+        uintptr_t sem = Sig::Get("phys.remove_sem"); // &s_RemoveImmediateSemaphore
+        if (sem && Mem::IsReadable((void*)sem, sizeof(int))) {
             int* s = (int*)sem;
             if (*s > 0) --*s; // balance PhysFrame's unmatched UTIL_DisableRemoveImmediate
         }
     }
 
-    bool PhysRecover_ResumeFromFault(int sig, void* ucontext)
+    bool Phys::Recover::ResumeFromFault(int sig, void* ucontext)
     {
         if (sig != SIGSEGV && sig != SIGBUS && sig != SIGFPE && sig != SIGILL) return false;
         if (!ucontext) return false;
@@ -635,18 +635,18 @@ namespace CrashCapture {
         if (!t.have) return false;
 
         // physics off so the next tick doesn't re-fault on the same garbage.
-        Platform_SetPhysPaused(1);
+        Platform::SetPhysPaused(1);
         RestorePhysEnvState(); // we bailed out of Simulate mid-tick -> un-defer deletes
         ResumeOut(ucontext, &t);
 
         ++g_physResumeCount;
-        Log::F("[CrashCapture] physics fault recovered: resumed Host_RunFrame (resume #%u; physics paused).\n", g_physResumeCount);
+        Log::F("[Crash Capture] physics fault recovered: resumed Host_RunFrame (resume #%u; physics paused).\n", g_physResumeCount);
         Log::Flush();
-        Recovery_NotePhysResume("physics", Log::Path());
+        Recovery::NotePhysResume("physics", Log::Path());
         return true;
     }
 
-    int PhysRecover_ResumeFromHang(void* ucontext, bool forceResume)
+    int Phys::Recover::ResumeFromHang(void* ucontext, bool forceResume)
     {
         (void)forceResume; // legacy gate arg -- the mode-write escape needs no safe PC
         if (!Cfg().phys_recover || !ucontext) return PHYS_NORESUME;
@@ -670,13 +670,13 @@ namespace CrashCapture {
             uintptr_t pc = (uintptr_t)g[REG_EIP];
         #endif
         static const uintptr_t kStackWindow = 0x20000; // 128 KiB above SP
-        PhysRecover_MarkOffender(sp, sp + kStackWindow);
+        Phys::Recover::MarkOffender(sp, sp + kStackWindow);
 
         // log where the thread is stuck (module+offset, maps to IDA via +0x2A000) so a new hang variant is diagnosable.
         {
             void* fn = _Unwind_FindEnclosingFunction((void*)pc);
-            const CCModule* pm = Modules_Find(pc);
-            const CCModule* fm = fn ? Modules_Find((uintptr_t)fn) : NULL;
+            const CCModule* pm = Modules::Find(pc);
+            const CCModule* fm = fn ? Modules::Find((uintptr_t)fn) : NULL;
             Log::Debug("[CC-PHYS]   stuck PC=0x%lx (%s+0x%lx), enclosing fn=%s+0x%lx\n",
                         (unsigned long)pc,
                         pm ? pm->name : "?", (unsigned long)(pm ? pc - pm->base : 0UL),
@@ -701,7 +701,7 @@ namespace CrashCapture {
         if (mode) { *mode = 1; g_modeForced = true; } // drain loop exits after the cascade
 
         // pause the next PhysFrame until offenders are frozen.
-        Platform_SetPhysPaused(1);
+        Platform::SetPhysPaused(1);
         g_pluginPaused = true;
 
         ++g_physResumeCount;

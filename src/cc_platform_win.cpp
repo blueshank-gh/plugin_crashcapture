@@ -3,6 +3,7 @@
 // (x64 via .pdata, x86 via the EBP chain), and dumps a stalled thread on demand.
 
 #include "crashcapture.h"
+#include "features/index.hpp"
 
 #if defined(CC_WINDOWS)
 
@@ -67,7 +68,7 @@ namespace CrashCapture {
 
     // --------- windows-registers ---
 
-    void Report_Registers(void* vctx)
+    void Report::Registers(void* vctx)
     {
         CONTEXT local;
         CONTEXT* c = (CONTEXT*)vctx;
@@ -94,7 +95,7 @@ namespace CrashCapture {
         #else
             uintptr_t pc = (uintptr_t)c->Eip;
         #endif
-        if (Mem_IsReadable((void*)pc, 16)) {
+        if (Mem::IsReadable((void*)pc, 16)) {
             Log::Str("  code bytes at instruction pointer:\n");
             Log::HexDump((void*)pc, 16, pc);
         }
@@ -102,7 +103,7 @@ namespace CrashCapture {
 
     // --------- windows-stack-walk ---
 
-    void Report_StackScan(void* vctx)
+    void Report::StackScan(void* vctx)
     {
         CONTEXT local;
         CONTEXT* base = (CONTEXT*)vctx;
@@ -116,9 +117,9 @@ namespace CrashCapture {
 
         int found = 0;
         for (uintptr_t a = sp; a < spLimit && found < 64; a += sizeof(uintptr_t)) {
-            if (!Mem_IsReadable((void*)a, sizeof(uintptr_t))) break;
+            if (!Mem::IsReadable((void*)a, sizeof(uintptr_t))) break;
             uintptr_t v = *(uintptr_t*)a;
-            if (Modules_Find(v) && Mem_IsExecutable(v)) {
+            if (Modules::Find(v) && Mem::IsExecutable(v)) {
                 char buf[512]; FormatAddress(v, buf, sizeof(buf));
                 Log::F("  [sp+0x%llx] %s\n", (unsigned long long)(a - sp), buf);
                 ++found;
@@ -127,7 +128,7 @@ namespace CrashCapture {
         if (!found) Log::Str("  <none>\n");
     }
 
-    void Report_NativeStack(void* vctx)
+    void Report::NativeStack(void* vctx)
     {
         CONTEXT local;
         CONTEXT* base = (CONTEXT*)vctx;
@@ -139,7 +140,7 @@ namespace CrashCapture {
         #else
             uintptr_t pc0 = (uintptr_t)base->Eip;
         #endif
-        if (pc0 && !Modules_Find(pc0) && Mem_IsExecutable(pc0))
+        if (pc0 && !Modules::Find(pc0) && Mem::IsExecutable(pc0))
             Log::Str("  note: instruction pointer is in anonymous executable memory "
                      "(likely LuaJIT mcode); see the Lua section for the Lua frame.\n");
 
@@ -153,7 +154,7 @@ namespace CrashCapture {
                 // recover the return address off the stack top and keep walking.
                 DWORD64 imageBase = 0;
                 PRUNTIME_FUNCTION rf = NULL;
-                if (c.Rip && Mem_IsExecutable((uintptr_t)c.Rip))
+                if (c.Rip && Mem::IsExecutable((uintptr_t)c.Rip))
                     rf = RtlLookupFunctionEntry(c.Rip, &imageBase, NULL);
 
                 if (rf) {
@@ -163,7 +164,7 @@ namespace CrashCapture {
                                      &handlerData, &establisher, NULL);
                     if (c.Rip == 0) break; // bottom of a real chain
                 } else {
-                    if (!Mem_IsReadable((void*)c.Rsp, sizeof(DWORD64))) break;
+                    if (!Mem::IsReadable((void*)c.Rsp, sizeof(DWORD64))) break;
                     c.Rip = *(DWORD64*)c.Rsp;
                     c.Rsp += sizeof(DWORD64);
                 }
@@ -173,7 +174,7 @@ namespace CrashCapture {
             Log::F("  #0  0x%08lx  %s  (eip)\n", base->Eip, buf);
             uintptr_t ebp = base->Ebp;
             for (int frame = 1; frame < 64; ++frame) {
-                if (!Mem_IsReadable((void*)ebp, 2 * sizeof(uintptr_t))) break;
+                if (!Mem::IsReadable((void*)ebp, 2 * sizeof(uintptr_t))) break;
                 uintptr_t ret     = ((uintptr_t*)ebp)[1];
                 uintptr_t nextEbp = ((uintptr_t*)ebp)[0];
                 if (!ret) break;
@@ -185,7 +186,7 @@ namespace CrashCapture {
         #endif
     }
 
-    int Platform_Backtrace(void* vctx, uintptr_t* out, int max)
+    int Platform::Backtrace(void* vctx, uintptr_t* out, int max)
     {
         if (!out || max <= 0) return 0;
         CONTEXT local;
@@ -198,7 +199,7 @@ namespace CrashCapture {
                 out[n++] = (uintptr_t)c.Rip;
                 DWORD64 imageBase = 0;
                 PRUNTIME_FUNCTION rf = NULL;
-                if (c.Rip && Mem_IsExecutable((uintptr_t)c.Rip))
+                if (c.Rip && Mem::IsExecutable((uintptr_t)c.Rip))
                     rf = RtlLookupFunctionEntry(c.Rip, &imageBase, NULL);
                 if (rf) {
                     PVOID handlerData = NULL; DWORD64 establisher = 0;
@@ -206,7 +207,7 @@ namespace CrashCapture {
                                      &handlerData, &establisher, NULL);
                     if (c.Rip == 0) break;
                 } else {
-                    if (!Mem_IsReadable((void*)c.Rsp, sizeof(DWORD64))) break;
+                    if (!Mem::IsReadable((void*)c.Rsp, sizeof(DWORD64))) break;
                     c.Rip = *(DWORD64*)c.Rsp;
                     c.Rsp += sizeof(DWORD64);
                 }
@@ -215,7 +216,7 @@ namespace CrashCapture {
             out[n++] = (uintptr_t)base->Eip;
             uintptr_t ebp = base->Ebp;
             while (n < max && n < 64) {
-                if (!Mem_IsReadable((void*)ebp, 2 * sizeof(uintptr_t))) break;
+                if (!Mem::IsReadable((void*)ebp, 2 * sizeof(uintptr_t))) break;
                 uintptr_t ret     = ((uintptr_t*)ebp)[1];
                 uintptr_t nextEbp = ((uintptr_t*)ebp)[0];
                 if (!ret) break;
@@ -230,20 +231,22 @@ namespace CrashCapture {
     // --------- windows-section-adapters ---
 
     static void* g_curCtx = NULL;
-    static void Sec_Registers(void*)   { Report_Registers(g_curCtx); }
-    static void Sec_Stack(void*)       { Report_NativeStack(g_curCtx); }
-    static void Sec_StackScan(void*)   { Report_StackScan(g_curCtx); }
-    static void Sec_Lua(void*)         { Lua_Dump(); }
-    static void Sec_Modules(void*)     { Modules_Dump(); }
+    static void Sec_Registers(void*)   { Report::Registers(g_curCtx); }
+    static void Sec_Stack(void*)       { Report::NativeStack(g_curCtx); }
+    static void Sec_StackScan(void*)   { Report::StackScan(g_curCtx); }
+    static void Sec_Lua(void*)         { Lua::Dump(); }
+    static void Sec_Modules(void*)     { Modules::Dump(); }
+    static void Sec_EngineFrame(void*) { Engine::ReportFrameProfile(); }
 
     static void EmitSections()
     {
-        Report_Section("Registers",   Sec_Registers, NULL, true);
-        Report_Section("Native stack", Sec_Stack,    NULL, true);
-        Report_Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
-        Report_Section("Lua",         Sec_Lua,       NULL, false);
-        Report_Section("Modules",     Sec_Modules,   NULL, false);
-        Report_Section("Diagnostics", Diag_Section,  g_curCtx, false);
+        { EngineFrameStats efs; if (Engine::FrameStats(&efs)) Report::Section("Profiling", Sec_EngineFrame, NULL, false); }
+        Report::Section("Registers",   Sec_Registers, NULL, true);
+        Report::Section("Native stack", Sec_Stack,    NULL, true);
+        Report::Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
+        Report::Section("Lua",         Sec_Lua,       NULL, false);
+        Report::Section("Modules",     Sec_Modules,   NULL, false);
+        Report::Section("Diagnostics", Diag::Section,  g_curCtx, false);
     }
 
     static const char* ExceptionName(DWORD code)
@@ -284,7 +287,7 @@ namespace CrashCapture {
         EXCEPTION_RECORD* rec = ep ? ep->ExceptionRecord : NULL;
         CONTEXT* ctx = ep ? ep->ContextRecord : NULL;
 
-        Modules_Refresh();
+        Modules::Refresh();
         Log::Open(rec && rec->ExceptionCode == EXCEPTION_STACK_OVERFLOW ? "stackoverflow" : "crash");
 
         char reason[256];
@@ -308,13 +311,13 @@ namespace CrashCapture {
             snprintf(reason, sizeof(reason), "(no exception record)");
         }
 
-        Report_SetContext(kind, reason, fault);
-        Report_Header(kind, reason);
+        Report::SetContext(kind, reason, fault);
+        Report::Header(kind, reason);
 
         g_curCtx = ctx;
         EmitSections();
 
-        Report_Footer();
+        Report::Footer();
         Log::Close();
     }
 
@@ -336,7 +339,7 @@ namespace CrashCapture {
             WriteCrashReport(kind, ep);
             RememberPc(pc, now);
             if (firstChance && ++g_firstChanceReports == kMaxFirstChanceReports)
-                Log::Notice("[CrashCapture] first-chance report cap reached (%d); "
+                Log::Notice("[Crash Capture] first-chance report cap reached (%d); "
                             "further first-chance exceptions are suppressed this session.\n",
                             kMaxFirstChanceReports);
         }
@@ -363,16 +366,16 @@ namespace CrashCapture {
 
     // --------- windows-thread-dumper ---
 
-    bool Platform_IsGameThread()
+    bool Platform::IsGameThread()
     {
         return g_gameThreadId != 0 && GetCurrentThreadId() == g_gameThreadId;
     }
 
-    void Platform_DumpThread(const char* kind, const char* reason)
+    void Platform::DumpThread(const char* kind, const char* reason)
     {
         if (InterlockedCompareExchange(&g_inReport, 1, 0) != 0) return;
 
-        Modules_Refresh();
+        Modules::Refresh();
         Log::Open(kind);
 
         const char* dispKind = kind;
@@ -385,7 +388,7 @@ namespace CrashCapture {
                 SuspendThread(th0);
                 CONTEXT cc; memset(&cc, 0, sizeof(cc));
                 cc.ContextFlags = CONTEXT_FULL;
-                if (GetThreadContext(th0, &cc)) sc = Report_ClassifyStall(&cc, stall, sizeof(stall));
+                if (GetThreadContext(th0, &cc)) sc = Report::ClassifyStall(&cc, stall, sizeof(stall));
                 ResumeThread(th0);
             }
             g_lastStallClass = sc;
@@ -393,8 +396,8 @@ namespace CrashCapture {
             dispKind = dk;
         }
 
-        Report_SetContext(dispKind, reason, 0);
-        Report_Header(dispKind, reason);
+        Report::SetContext(dispKind, reason, 0);
+        Report::Header(dispKind, reason);
 
         CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
         HANDLE th = (HANDLE)g_gameThreadHandle;
@@ -415,22 +418,23 @@ namespace CrashCapture {
             }
         }
 
-        Report_Section("Registers", Sec_Registers, NULL, true);
-        Report_Section("Native stack", Sec_Stack, NULL, true);
-        Report_Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
-        Report_Section("Lua", Sec_Lua, NULL, false);
-
+        { EngineFrameStats efs; if (Engine::FrameStats(&efs)) Report::Section("Profiling", Sec_EngineFrame, NULL, false); }
+        Report::Section("Registers", Sec_Registers, NULL, true);
+        Report::Section("Native stack", Sec_Stack, NULL, true);
+        Report::Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
+        Report::Section("Lua", Sec_Lua, NULL, false);
+        
         if (suspended) ResumeThread(th);
 
-        Report_Section("Modules", Sec_Modules, NULL, false);
-        Report_Section("Diagnostics", Diag_Section, g_curCtx, false);
+        Report::Section("Modules", Sec_Modules, NULL, false);
+        Report::Section("Diagnostics", Diag::Section, g_curCtx, false);
 
-        Report_Footer();
+        Report::Footer();
         Log::Close();
         InterlockedExchange(&g_inReport, 0);
     }
 
-    int Platform_RequestLuaBreak()
+    int Platform::RequestLuaBreak()
     {
         if (g_gameThreadId == GetCurrentThreadId())
             return -1;
@@ -443,15 +447,15 @@ namespace CrashCapture {
         ctx.ContextFlags = CONTEXT_CONTROL;
         GetThreadContext(th, &ctx);
 
-        int armed = Lua_ArmBreakHook();
+        int armed = Lua::ArmBreakHook();
 
         ResumeThread(th);
         return armed;
     }
-    int Platform_SetPhysPaused(int) { return 0; }
-    int Platform_PhysPaused() { return -1; }
+    int Platform::SetPhysPaused(int) { return 0; }
+    int Platform::PhysPaused() { return -1; }
 
-    uintptr_t Platform_ContextPC(void* vctx)
+    uintptr_t Platform::ContextPC(void* vctx)
     {
         if (!vctx) return 0;
         CONTEXT* c = (CONTEXT*)vctx;
@@ -465,7 +469,7 @@ namespace CrashCapture {
     // --------- windows-symbols (dbghelp) ---
     
     static bool g_symReady = false;
-    void Sym_Init()
+    void Sym::Init()
     {
         if (g_symReady || !Cfg().symbols) return;
         SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME | SYMOPT_LOAD_LINES | SYMOPT_FAIL_CRITICAL_ERRORS | SYMOPT_NO_PROMPTS);
@@ -474,14 +478,14 @@ namespace CrashCapture {
         } __except (EXCEPTION_EXECUTE_HANDLER) { g_symReady = false; }
     }
 
-    void Sym_Cleanup()
+    void Sym::Cleanup()
     {
         if (!g_symReady) return;
         __try { SymCleanup(GetCurrentProcess()); } __except (EXCEPTION_EXECUTE_HANDLER) {}
         g_symReady = false;
     }
 
-    bool Sym_Resolve(uintptr_t addr, char* out, size_t outsz)
+    bool Sym::Resolve(uintptr_t addr, char* out, size_t outsz)
     {
         if (!g_symReady || !addr || !out || outsz == 0) return false;
         __try {
@@ -508,7 +512,7 @@ namespace CrashCapture {
         }
     }
 
-    uintptr_t Sym_Lookup(const char* module, const char* name)
+    uintptr_t Sym::Lookup(const char* module, const char* name)
     {
         if (!name || !*name) return 0;
 
@@ -521,7 +525,7 @@ namespace CrashCapture {
                 si->MaxNameLen = 511;
                 if (SymFromName(GetCurrentProcess(), name, si) && si->Address) {
                     if (!module) return (uintptr_t)si->Address;
-                    const CCModule* m = Modules_FindByName(module);
+                    const CCModule* m = Modules::FindByName(module);
                     if (m && (uintptr_t)si->Address >= m->base && (uintptr_t)si->Address < m->base + m->size)
                         return (uintptr_t)si->Address;
                 }
@@ -529,14 +533,14 @@ namespace CrashCapture {
         }
 
         if (module) {
-            const CCModule* m = Modules_FindByName(module);
+            const CCModule* m = Modules::FindByName(module);
             if (!m) return 0;
             void* p = (void*)GetProcAddress((HMODULE)m->base, name);
             return (uintptr_t)p;
         }
 
         const CCModule* mods = NULL;
-        int c = Modules_Snapshot(&mods);
+        int c = Modules::Snapshot(&mods);
         for (int i = 0; i < c; ++i) {
             void* p = (void*)GetProcAddress((HMODULE)mods[i].base, name);
             if (p) return (uintptr_t)p;
@@ -544,7 +548,7 @@ namespace CrashCapture {
         return 0;
     }
 
-    int Platform_EnumThreads(CCThread* out, int max)
+    int Platform::EnumThreads(CCThread* out, int max)
     {
         if (!out || max <= 0) return 0;
         DWORD pid = GetCurrentProcessId();
@@ -595,13 +599,13 @@ namespace CrashCapture {
     {
         if (InterlockedCompareExchange(&g_inReport, 1, 0) != 0)
             return;
-        Modules_Refresh();
+        Modules::Refresh();
         Log::Open(kind);
-        Report_SetContext(kind, reason, 0);
-        Report_Header(kind, reason);
+        Report::SetContext(kind, reason, 0);
+        Report::Header(kind, reason);
         g_curCtx = NULL; // sections capture the live context via RtlCaptureContext
         EmitSections();
-        Report_Footer();
+        Report::Footer();
         Log::Close();
         InterlockedExchange(&g_inReport, 0);
     }
@@ -672,7 +676,7 @@ namespace CrashCapture {
         if (!g_dumpEvent || !g_dumpStop) return;
         g_dumpWaiter = CreateThread(NULL, 0, DumpWaiterThread, NULL, 0, NULL);
         if (g_dumpWaiter)
-            Log::F("[CrashCapture] manual dump armed: signal event \"%s\" to capture.\n", name);
+            Log::F("[Crash Capture] manual dump armed: signal event \"%s\" to capture.\n", name);
     }
 
     static void StopDumpWaiter()
@@ -687,7 +691,7 @@ namespace CrashCapture {
     }
 
     // ------------------------------------------------------------- install -----
-    void Platform_Install()
+    void Platform::Install()
     {
         g_prevFilter = SetUnhandledExceptionFilter(UnhandledFilter);
         g_veh = AddVectoredExceptionHandler(0 /*call last*/, VectoredHandler);
@@ -695,17 +699,19 @@ namespace CrashCapture {
         SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
         InstallCrtHandlers();
         if (Cfg().manual_dump) StartDumpWaiter();
-        Sym_Init(); // enumerate modules now, in a safe (non-crash) context
+        Sym::Init(); // enumerate modules now, in a safe (non-crash) context
+        Features::Init();
     }
 
-    void Platform_Uninstall()
+    void Platform::Uninstall()
     {
+        Features::Shutdown();
         StopDumpWaiter();
         if (g_veh) { RemoveVectoredExceptionHandler(g_veh); g_veh = NULL; }
         SetUnhandledExceptionFilter(g_prevFilter);
         g_prevFilter = NULL;
         signal(SIGABRT, SIG_DFL);
-        Sym_Cleanup();
+        Sym::Cleanup();
     }
 }
 

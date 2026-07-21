@@ -14,16 +14,18 @@ static void detour_func(void* self, int a) {
 }
 
 // this will attempt to create the hook, returns false if it couldn't.
-Hook_Install(target_ptr, (void*)detour_func, (void**)&original_func);
+Hook::Install(target_ptr, (void*)detour_func, (void**)&original_func);
 
 // this will remove the hook, restoring the function.
-Hook_Uninstall(target_ptr);
+Hook::Uninstall(target_ptr);
 */
 
 #pragma once
 namespace CrashCapture {
-    bool Hook_Install(void* target, void* detour, void** trampoline);
-    bool Hook_Uninstall(void* target);
-    void Hook_RemoveAll();
-    int  Hook_Count();
+    namespace Hook {
+        bool Install(void* target, void* detour, void** trampoline);
+        bool Uninstall(void* target);
+        void RemoveAll();
+        int  Count();
+    }
 }
