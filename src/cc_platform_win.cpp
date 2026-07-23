@@ -457,6 +457,11 @@ namespace CrashCapture {
     int Platform::SetPhysPaused(int) { return 0; }
     int Platform::PhysPaused() { return -1; }
 
+    void Platform::SuppressFurtherReports()
+    {
+        InterlockedExchange(&g_inReport, 1);
+    }
+
     uintptr_t Platform::ContextPC(void* vctx)
     {
         if (!vctx) return 0;

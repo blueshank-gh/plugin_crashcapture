@@ -672,6 +672,11 @@ namespace CrashCapture {
         g_inReport = 0;
     }
 
+    void Platform::SuppressFurtherReports()
+    {
+        g_inReport = 1;
+    }
+
     // --------- linux-install ---
     void Platform::Install()
     {

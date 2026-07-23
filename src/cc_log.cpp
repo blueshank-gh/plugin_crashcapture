@@ -364,14 +364,14 @@ namespace CrashCapture::Log {
             unsigned pid = (unsigned)getpid();
         #endif
 
-        snprintf(g_path, sizeof(g_path), "%s/%s_%s_%u.md", Cfg().dir, kind, stamp, pid);
+        snprintf(g_path, sizeof(g_path), "%s/%s_%s_%u.md", Cfg().dir, stamp, kind, pid);
 
         #if defined(CC_WINDOWS)
             g_file = CreateFileA(g_path, GENERIC_WRITE, FILE_SHARE_READ, NULL,
                                 CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
             if (g_file == INVALID_HANDLE_VALUE) {
                 // last resort: drop the directory, write next to the exe cwd
-                snprintf(g_path, sizeof(g_path), "crashcapture_%s_%s_%u.md", kind, stamp, pid);
+                snprintf(g_path, sizeof(g_path), "crashcapture_%s_%s_%u.md", stamp, kind, pid);
                 g_file = CreateFileA(g_path, GENERIC_WRITE, FILE_SHARE_READ, NULL,
                                     CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
             }
@@ -379,7 +379,7 @@ namespace CrashCapture::Log {
         #else
             g_file = open(g_path, O_TRUNC | O_WRONLY | O_CREAT, 0666);
             if (g_file < 0) {
-                snprintf(g_path, sizeof(g_path), "crashcapture_%s_%s_%u.md", kind, stamp, pid);
+                snprintf(g_path, sizeof(g_path), "crashcapture_%s_%s_%u.md", stamp, kind, pid);
                 g_file = open(g_path, O_TRUNC | O_WRONLY | O_CREAT, 0666);
             }
             return g_file >= 0;

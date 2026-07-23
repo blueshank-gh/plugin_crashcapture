@@ -42,24 +42,37 @@ namespace CrashCapture {
     }
 
     // Async-safe UTC breakdown (civil_from_days); localtime_r locks, unsafe in a handler.
-    void UtcStamp(char* out, size_t outsz)
+    static void UtcBreakdown(long long& y, unsigned& m, unsigned& d, int& sec)
     {
         long long t = (long long)time(NULL);
-        int sec = (int)(((t % 86400) + 86400) % 86400);
+        sec = (int)(((t % 86400) + 86400) % 86400);
         long long days = (t - sec) / 86400;
 
         long long z = days + 719468;
         long long era = (z >= 0 ? z : z - 146096) / 146097;
         unsigned doe = (unsigned)(z - era * 146097);
         unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-        long long y = (long long)yoe + era * 400;
+        y = (long long)yoe + era * 400;
         unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
         unsigned mp = (5 * doy + 2) / 153;
-        unsigned d = doy - (153 * mp + 2) / 5 + 1;
-        unsigned m = mp + (mp < 10 ? 3 : -9);
+        d = doy - (153 * mp + 2) / 5 + 1;
+        m = mp + (mp < 10 ? 3 : -9);
         y += (m <= 2);
+    }
 
-        snprintf(out, outsz, "%04lld%02u%02u_%02d%02d%02d",
+    void UtcStamp(char* out, size_t outsz)
+    {
+        long long y; unsigned m, d; int sec;
+        UtcBreakdown(y, m, d, sec);
+        snprintf(out, outsz, "%04lld-%02u-%02u_%02d-%02d-%02d",
+                y, m, d, sec / 3600, (sec / 60) % 60, sec % 60);
+    }
+
+    void UtcStampReadable(char* out, size_t outsz)
+    {
+        long long y; unsigned m, d; int sec;
+        UtcBreakdown(y, m, d, sec);
+        snprintf(out, outsz, "%04lld-%02u-%02u %02d:%02d:%02d",
                 y, m, d, sec / 3600, (sec / 60) % 60, sec % 60);
     }
 
@@ -156,6 +169,7 @@ namespace CrashCapture {
         c.symbols = EnvInt("CRASHCAPTURE_SYMBOLS", 1) != 0;
         c.engine_error = EnvInt("CRASHCAPTURE_ENGINE_ERROR", 1) != 0;
         c.frame_profile = EnvInt("CRASHCAPTURE_FRAME_PROFILE", 1) != 0;
+        c.memapi = EnvInt("CRASHCAPTURE_MEMAPI", 0) != 0;
 
         // store crashes in <gmod-root>/crashes
         const char* dir = CfgRaw("CRASHCAPTURE_DIR");
@@ -392,7 +406,7 @@ namespace CrashCapture {
     void Report::Header(const char* kind, const char* reason)
     {
         char stamp[32];
-        UtcStamp(stamp, sizeof(stamp));
+        UtcStampReadable(stamp, sizeof(stamp));
 
         Log::F("# Crash Capture\n\n");
         Log::F("- **type** : `%s`\n", kind);

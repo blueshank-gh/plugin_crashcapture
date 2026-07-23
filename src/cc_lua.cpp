@@ -5,6 +5,7 @@
 
 #include "features/cc_engine.h"
 #include "tools/cc_hooking.h"
+#include "tools/cc_signature.h"
 
 #include "glua/LuaShared.h"
 #include "glua/LuaInterface.h"
@@ -80,11 +81,14 @@ namespace CrashCapture {
         void        (*pushnumber)(lua_State*, double);
         void        (*pushboolean)(lua_State*, int);
         void        (*pushstring)(lua_State*, const char*);
+        void        (*pushlightuserdata)(lua_State*, void*);
+        void        (*pushlstring)(lua_State*, const char*, size_t);
         int         (*sethook)(lua_State*, cc_lua_Hook, int, int);
         int         (*error)(lua_State*);
         bool        ok; // stack-walk API resolved
         bool        push_ok; // push API resolved
         bool        hook_ok; // loop-break resolved
+        bool        mem_ok; // pushlightuserdata resolved for memapi
     };
 
     static const char* kGmodTypeName[] = {
@@ -200,6 +204,11 @@ namespace CrashCapture {
         g_api.sethook = (int(*)(lua_State*, cc_lua_Hook, int, int)) Lua::Sym(m, "lua_sethook");
         g_api.error = (int(*)(lua_State*)) Lua::Sym(m, "lua_error");
         g_api.hook_ok = g_api.sethook && g_api.error && g_api.pushstring;
+
+        // only resolved/used when CRASHCAPTURE_MEMAPI is on.
+        g_api.pushlightuserdata = (void(*)(lua_State*, void*)) Lua::Sym(m, "lua_pushlightuserdata");
+        g_api.pushlstring = (void(*)(lua_State*, const char*, size_t)) Lua::Sym(m, "lua_pushlstring");
+        g_api.mem_ok = g_api.pushlightuserdata && g_api.pushlstring;
     }
 
     static const char* RealmName(int r)
@@ -826,31 +835,32 @@ namespace CrashCapture {
     // --------- lua-api ---
 
     enum CfgKind { CK_INT, CK_BOOL, CK_STR };
-    struct CfgEntry { const char* key; int kind; void* ptr; size_t cap; };
+    struct CfgEntry { const char* key; int kind; void* ptr; size_t cap; bool envOnly; };
 
     static int BuildCfgTable(CfgEntry* t)
     {
         Config& c = Cfg();
         int n = 0;
-        t[n++] = {"timeout", CK_INT, &c.timeout_sec, 0};
-        t[n++] = {"hang_kill", CK_INT, &c.hang_kill_sec, 0};
-        t[n++] = {"max_age_days", CK_INT, &c.max_age_days, 0};
-        t[n++] = {"loopbreak", CK_BOOL, &c.loopbreak, 0};
-        t[n++] = {"phys_resume", CK_BOOL, &c.phys_resume, 0};
-        t[n++] = {"phys_recover", CK_BOOL, &c.phys_recover, 0};
-        t[n++] = {"phys_resolve_delay", CK_INT, &c.phys_resolve_delay, 0};
-        t[n++] = {"phys_pin", CK_BOOL, &c.phys_pin, 0};
-        t[n++] = {"debug", CK_BOOL, &c.debug, 0};
-        t[n++] = {"engine_error", CK_BOOL, &c.engine_error, 0};
-        t[n++] = {"frame_profile", CK_BOOL, &c.frame_profile, 0};
-        t[n++] = {"report_debounce", CK_INT, &c.report_debounce_sec, 0};
-        t[n++] = {"firstchance", CK_BOOL, &c.firstchance, 0};
-        t[n++] = {"window_watchdog", CK_BOOL, &c.window_watchdog, 0};
-        t[n++] = {"lua_heartbeat", CK_BOOL, &c.lua_heartbeat, 0};
-        t[n++] = {"manual_dump", CK_BOOL, &c.manual_dump, 0};
-        t[n++] = {"symbols", CK_BOOL, &c.symbols, 0};
-        t[n++] = {"dir", CK_STR,  c.dir, sizeof(c.dir)};
-        t[n++] = {"script", CK_STR,  c.script, sizeof(c.script)};
+        t[n++] = {"timeout", CK_INT, &c.timeout_sec, 0, false};
+        t[n++] = {"hang_kill", CK_INT, &c.hang_kill_sec, 0, false};
+        t[n++] = {"max_age_days", CK_INT, &c.max_age_days, 0, false};
+        t[n++] = {"loopbreak", CK_BOOL, &c.loopbreak, 0, false};
+        t[n++] = {"phys_resume", CK_BOOL, &c.phys_resume, 0, false};
+        t[n++] = {"phys_recover", CK_BOOL, &c.phys_recover, 0, false};
+        t[n++] = {"phys_resolve_delay", CK_INT, &c.phys_resolve_delay, 0, false};
+        t[n++] = {"phys_pin", CK_BOOL, &c.phys_pin, 0, false};
+        t[n++] = {"debug", CK_BOOL, &c.debug, 0, false};
+        t[n++] = {"engine_error", CK_BOOL, &c.engine_error, 0, false};
+        t[n++] = {"frame_profile", CK_BOOL, &c.frame_profile, 0, false};
+        t[n++] = {"report_debounce", CK_INT, &c.report_debounce_sec, 0, false};
+        t[n++] = {"firstchance", CK_BOOL, &c.firstchance, 0, false};
+        t[n++] = {"window_watchdog", CK_BOOL, &c.window_watchdog, 0, false};
+        t[n++] = {"lua_heartbeat", CK_BOOL, &c.lua_heartbeat, 0, false};
+        t[n++] = {"manual_dump", CK_BOOL, &c.manual_dump, 0, false};
+        t[n++] = {"symbols", CK_BOOL, &c.symbols, 0, false};
+        t[n++] = {"dir", CK_STR,  c.dir, sizeof(c.dir), true};
+        t[n++] = {"script", CK_STR,  c.script, sizeof(c.script), true};
+        t[n++] = {"memapi", CK_BOOL, &c.memapi, 0, true};
         return n;
     }
 
@@ -892,6 +902,10 @@ namespace CrashCapture {
         CfgEntry buf[24];
         const CfgEntry* e = FindCfg(key, buf);
         if (!e) return 0;
+        if (e->envOnly) {
+            Log::Debug("[CC-LUA] refused to set '%s' from Lua (launch-config only)\n", key);
+            return 0;
+        }
 
         switch (e->kind) {
             case CK_INT: *(int*)e->ptr = (int)g_api.tonumber(L, 2); break;
@@ -969,11 +983,384 @@ namespace CrashCapture {
         return 0;
     }
 
+    static ILuaInterface* IfaceForState(lua_State* L);
+
+    static int cc_lua_trace(lua_State* L)
+    {
+        ILuaInterface* l = IfaceForState(L);
+        if (!l) { if (g_api.push_ok) { g_api.pushnil(L); return 1; } return 0; }
+
+        uintptr_t pcs[64];
+        int n = Platform::Backtrace(NULL, pcs, 64);
+
+        l->CreateTable();
+        for (int i = 0; i < n; ++i) {
+            char buf[512];
+            FormatAddress(pcs[i], buf, sizeof(buf));
+            l->PushNumber((double)(i + 1));
+            l->PushString(buf);
+            l->SetTable(-3);
+        }
+        return 1;
+    }
+
     static ILuaInterface* IfaceForState(lua_State* L)
     {
         for (int r = 0; r < 3; ++r)
             if (g_apiState[r] && g_apiState[r] == (void*)L) return g_realm[r];
         return NULL;
+    }
+
+    static uintptr_t ArgAddr(lua_State* L, int idx)
+    {
+        int t = g_api.type(L, idx);
+        if (t == CC_LT_LIGHTUD || t == CC_LT_UD) return (uintptr_t)g_api.touserdata(L, idx);
+        return (uintptr_t)(long long)g_api.tonumber(L, idx);
+    }
+
+    // --------- crashcapture.mem.*, requires memapi gate ---
+
+    static int cc_lua_mem_read(lua_State* L)
+    {
+        if (!g_api.mem_ok) return 0;
+        uintptr_t a = ArgAddr(L, 1);
+        const char* ty = g_api.type(L, 2) == CC_LT_STR ? g_api.tolstring(L, 2, NULL) : NULL;
+        if (!a || !ty) { g_api.pushnil(L); return 1; }
+
+        #define CC_RDNUM(T) do { if (!Mem::IsReadable((void*)a, sizeof(T))) { g_api.pushnil(L); return 1; } \
+            T v; memcpy(&v, (void*)a, sizeof(T)); g_api.pushnumber(L, (double)v); return 1; } while (0)
+        if (!strcmp(ty, "int8")) CC_RDNUM(signed char);
+        else if (!strcmp(ty, "uint8")) CC_RDNUM(unsigned char);
+        else if (!strcmp(ty, "int16")) CC_RDNUM(short);
+        else if (!strcmp(ty, "uint16")) CC_RDNUM(unsigned short);
+        else if (!strcmp(ty, "int32")) CC_RDNUM(int);
+        else if (!strcmp(ty, "uint32")) CC_RDNUM(unsigned int);
+        else if (!strcmp(ty, "int64")) CC_RDNUM(long long);
+        else if (!strcmp(ty, "uint64")) CC_RDNUM(unsigned long long);
+        else if (!strcmp(ty, "float")) CC_RDNUM(float);
+        else if (!strcmp(ty, "double")) CC_RDNUM(double);
+        else if (!strcmp(ty, "ptr")) {
+            if (!Mem::IsReadable((void*)a, sizeof(void*))) { g_api.pushnil(L); return 1; }
+            void* p; memcpy(&p, (void*)a, sizeof(void*));
+            g_api.pushlightuserdata(L, p);
+            return 1;
+        }
+        #undef CC_RDNUM
+        g_api.pushnil(L);
+        return 1;
+    }
+
+    static int cc_lua_mem_string(lua_State* L)
+    {
+        ILuaInterface* l = IfaceForState(L);
+        if (!l || !g_api.mem_ok) { if (g_api.push_ok) { g_api.pushnil(L); return 1; } return 0; }
+
+        uintptr_t a = ArgAddr(L, 1);
+        int maxlen = g_api.type(L, 2) == CC_LT_NUM ? (int)g_api.tonumber(L, 2) : 256;
+        if (maxlen < 0 || maxlen > 4096) maxlen = 4096;
+        static char buf[4096];
+        int n = 0;
+        for (; n < maxlen; ++n) {
+            if (!Mem::IsReadable((void*)(a + n), 1)) break;
+            char c = *(char*)(a + n);
+            if (!c) break;
+            buf[n] = c;
+        }
+        g_api.pushlstring(L, buf, (size_t)n);
+        return 1;
+    }
+
+    static int cc_lua_mem_bytes(lua_State* L)
+    {
+        ILuaInterface* l = IfaceForState(L);
+        if (!l || !g_api.mem_ok) { if (g_api.push_ok) { g_api.pushnil(L); return 1; } return 0; }
+
+        uintptr_t a = ArgAddr(L, 1);
+        int want = g_api.type(L, 2) == CC_LT_NUM ? (int)g_api.tonumber(L, 2) : 64;
+        if (want < 0) want = 0;
+        if (want > 4096) want = 4096;
+        static char buf[4096];
+        int n = 0;
+        for (; n < want; ++n) {
+            if (!Mem::IsReadable((void*)(a + n), 1)) break;
+            buf[n] = *(char*)(a + n);
+        }
+        g_api.pushlstring(L, buf, (size_t)n);
+        return 1;
+    }
+
+    static int cc_lua_mem_deref(lua_State* L)
+    {
+        if (!g_api.mem_ok) return 0;
+        uintptr_t a = ArgAddr(L, 1);
+        if (!Mem::IsReadable((void*)a, sizeof(void*))) { g_api.pushnil(L); return 1; }
+        void* p; memcpy(&p, (void*)a, sizeof(void*));
+        g_api.pushlightuserdata(L, p);
+        return 1;
+    }
+
+    static int cc_lua_mem_offset(lua_State* L)
+    {
+        if (!g_api.mem_ok) return 0;
+        uintptr_t a = ArgAddr(L, 1) + (uintptr_t)(long long)g_api.tonumber(L, 2);
+        g_api.pushlightuserdata(L, (void*)a);
+        return 1;
+    }
+
+    static int cc_lua_mem_chain(lua_State* L)
+    {
+        if (!g_api.mem_ok) return 0;
+        int top = g_api.gettop(L);
+        if (top < 1) { g_api.pushnil(L); return 1; }
+        uintptr_t a = ArgAddr(L, 1);
+        for (int i = 2; i <= top; ++i) {
+            a += (uintptr_t)(long long)g_api.tonumber(L, i);
+            if (i < top) { // intermediate hop: follow the pointer stored here
+                if (!a || !Mem::IsReadable((void*)a, sizeof(void*))) { g_api.pushnil(L); return 1; }
+                void* p; memcpy(&p, (void*)a, sizeof(void*));
+                a = (uintptr_t)p;
+            }
+        }
+        g_api.pushlightuserdata(L, (void*)a);
+        return 1;
+    }
+
+    static int cc_lua_mem_find(lua_State* L)
+    {
+        if (!g_api.mem_ok) return 0;
+        const char* name = g_api.type(L, 1) == CC_LT_STR ? g_api.tolstring(L, 1, NULL) : NULL;
+        const CCModule* m = name ? Modules::FindByName(name) : NULL;
+        if (!m) { g_api.pushnil(L); return 1; }
+        g_api.pushlightuserdata(L, (void*)m->base);
+        g_api.pushnumber(L, (double)m->size);
+        return 2; // base, size
+    }
+
+    static int cc_lua_mem_modules(lua_State* L)
+    {
+        ILuaInterface* l = IfaceForState(L);
+        if (!l || !g_api.mem_ok) { if (g_api.push_ok) { g_api.pushnil(L); return 1; } return 0; }
+
+        const CCModule* mods = NULL;
+        int count = Modules::Snapshot(&mods);
+
+        l->CreateTable();
+        for (int i = 0; i < count; ++i) {
+            l->PushNumber((double)(i + 1));
+            l->CreateTable();
+            l->PushString(mods[i].name); l->SetField(-2, "name");
+            g_api.pushlightuserdata(L, (void*)mods[i].base); l->SetField(-2, "base");
+            l->PushNumber((double)mods[i].size); l->SetField(-2, "size");
+            l->SetTable(-3);
+        }
+        return 1;
+    }
+
+    // mem.scan("server", "48 8B ?? C3") -> address in that module, or nil
+    static int cc_lua_mem_scan(lua_State* L)
+    {
+        if (!g_api.mem_ok) return 0;
+        const char* name = g_api.type(L, 1) == CC_LT_STR ? g_api.tolstring(L, 1, NULL) : NULL;
+        const char* pat  = g_api.type(L, 2) == CC_LT_STR ? g_api.tolstring(L, 2, NULL) : NULL;
+        if (!name || !pat) { g_api.pushnil(L); return 1; }
+        uintptr_t hit = Sig::Scan(name, pat);
+        if (hit) g_api.pushlightuserdata(L, (void*)hit);
+        else g_api.pushnil(L);
+        return 1;
+    }
+
+    static int cc_lua_mem_region(lua_State* L)
+    {
+        ILuaInterface* l = IfaceForState(L);
+        if (!l || !g_api.mem_ok) { if (g_api.push_ok) { g_api.pushnil(L); return 1; } return 0; }
+
+        uintptr_t a = ArgAddr(L, 1);
+        if (!a) { l->PushNil(); return 1; }
+
+        #if defined(CC_WINDOWS)
+            MEMORY_BASIC_INFORMATION mbi;
+            if (!VirtualQuery((void*)a, &mbi, sizeof(mbi))) { l->PushNil(); return 1; }
+            DWORD pr = mbi.Protect & 0xff;
+            bool r = pr == PAGE_READONLY || pr == PAGE_READWRITE || pr == PAGE_EXECUTE_READ || pr == PAGE_EXECUTE_READWRITE;
+            bool w = pr == PAGE_READWRITE || pr == PAGE_EXECUTE_READWRITE;
+            bool x = pr == PAGE_EXECUTE || pr == PAGE_EXECUTE_READ || pr == PAGE_EXECUTE_READWRITE;
+            l->CreateTable();
+            g_api.pushlightuserdata(L, mbi.BaseAddress); l->SetField(-2, "base");
+            l->PushNumber((double)mbi.RegionSize); l->SetField(-2, "size");
+            l->PushBool(r); l->SetField(-2, "read");
+            l->PushBool(w); l->SetField(-2, "write");
+            l->PushBool(x); l->SetField(-2, "execute");
+        #else
+            const CCModule* m = Modules::Find(a);
+            uintptr_t base = m ? m->base : (a & ~(uintptr_t)0xFFF);
+            l->CreateTable();
+            g_api.pushlightuserdata(L, (void*)base); l->SetField(-2, "base");
+            l->PushNumber((double)(m ? m->size : 0x1000)); l->SetField(-2, "size");
+            l->PushBool(Mem::IsReadable((void*)a, 1)); l->SetField(-2, "read");
+            l->PushBool(false); l->SetField(-2, "write");
+            l->PushBool(Mem::IsExecutable(a)); l->SetField(-2, "execute");
+        #endif
+        return 1;
+    }
+
+    static int cc_lua_mem_dump(lua_State* L)
+    {
+        if (!g_api.mem_ok) return 0;
+        uintptr_t a = ArgAddr(L, 1);
+        size_t want = g_api.type(L, 2) == CC_LT_NUM ? (size_t)g_api.tonumber(L, 2) : 64;
+        if (want > 512) want = 512;
+        if (!a) { g_api.pushnumber(L, 0); return 1; }
+        size_t avail = 0;
+        while (avail < want && Mem::IsReadable((void*)(a + avail), 1)) ++avail;
+        if (avail) Log::HexDump((void*)a, avail, a);
+        g_api.pushnumber(L, (double)avail);
+        return 1;
+    }
+
+    static int cc_lua_mem_symbol(lua_State* L)
+    {
+        if (!g_api.mem_ok) return 0;
+        const char* s1 = g_api.type(L, 1) == CC_LT_STR ? g_api.tolstring(L, 1, NULL) : NULL;
+        const char* s2 = g_api.type(L, 2) == CC_LT_STR ? g_api.tolstring(L, 2, NULL) : NULL;
+        const char* module = s2 ? s1 : NULL;
+        const char* name = s2 ? s2 : s1;
+        if (!name) { g_api.pushnil(L); return 1; }
+        uintptr_t addr = Sym::Lookup(module, name);
+        if (!addr) { g_api.pushnil(L); return 1; }
+        g_api.pushlightuserdata(L, (void*)addr);
+        return 1;
+    }
+
+    static int cc_lua_mem_threads(lua_State* L)
+    {
+        ILuaInterface* l = IfaceForState(L);
+        if (!l || !g_api.mem_ok) { if (g_api.push_ok) { g_api.pushnil(L); return 1; } return 0; }
+
+        static CCThread th[256];
+        int n = Platform::EnumThreads(th, 256);
+
+        l->CreateTable();
+        for (int i = 0; i < n; ++i) {
+            l->PushNumber((double)(i + 1));
+            l->CreateTable();
+            l->PushNumber((double)th[i].id); l->SetField(-2, "id");
+            if (th[i].pc) {
+                g_api.pushlightuserdata(L, (void*)th[i].pc); l->SetField(-2, "pc");
+                char s[512]; FormatAddress(th[i].pc, s, sizeof(s));
+                l->PushString(s); l->SetField(-2, "sym");
+            }
+            if (th[i].name[0]) { l->PushString(th[i].name); l->SetField(-2, "name"); }
+            l->PushBool(th[i].current); l->SetField(-2, "current");
+            l->SetTable(-3);
+        }
+        return 1;
+    }
+
+    static int MemNeedleSize(const char* ty)
+    {
+        if (!ty || !strcmp(ty, "ptr")) return (int)sizeof(void*);
+        if (!strcmp(ty, "int8")  || !strcmp(ty, "uint8"))  return 1;
+        if (!strcmp(ty, "int16") || !strcmp(ty, "uint16")) return 2;
+        if (!strcmp(ty, "int32") || !strcmp(ty, "uint32") || !strcmp(ty, "float"))  return 4;
+        if (!strcmp(ty, "int64") || !strcmp(ty, "uint64") || !strcmp(ty, "double")) return 8;
+        return 0;
+    }
+
+    static int MemBuildNeedle(lua_State* L, int valIdx, const char* ty, unsigned char* out)
+    {
+        int sz = MemNeedleSize(ty);
+        if (sz <= 0) return 0;
+        if (ty && !strcmp(ty, "float"))  { float f = (float)g_api.tonumber(L, valIdx); memcpy(out, &f, 4); return 4; }
+        if (ty && !strcmp(ty, "double")) { double d = g_api.tonumber(L, valIdx);        memcpy(out, &d, 8); return 8; }
+        uint64_t v = (uint64_t)ArgAddr(L, valIdx);
+        memcpy(out, &v, sz);
+        return sz;
+    }
+
+    static void MemScanModuleForBytes(lua_State* L, ILuaInterface* l, const CCModule* m,
+                                       const unsigned char* needle, int nlen, int* count, int cap)
+    {
+        if (nlen <= 0 || nlen > kSigMaxLen) return;
+        int room = cap - *count;
+        if (room <= 0) return;
+
+        CCPattern pat;
+        for (int i = 0; i < nlen; ++i) { pat.bytes[i] = needle[i]; pat.mask[i] = 1; }
+        pat.len = nlen;
+
+        uintptr_t hits[256];
+        if (room > (int)(sizeof(hits) / sizeof(hits[0]))) room = (int)(sizeof(hits) / sizeof(hits[0]));
+        int n = Sig::FindAll(m, &pat, hits, room);
+        for (int i = 0; i < n; ++i) {
+            l->PushNumber((double)(++(*count)));
+            g_api.pushlightuserdata(L, (void*)hits[i]);
+            l->SetTable(-3);
+        }
+    }
+
+    static int cc_lua_mem_search(lua_State* L)
+    {
+        ILuaInterface* l = IfaceForState(L);
+        if (!l || !g_api.mem_ok) { if (g_api.push_ok) { g_api.pushnil(L); return 1; } return 0; }
+
+        const char* mod = g_api.type(L, 1) == CC_LT_STR ? g_api.tolstring(L, 1, NULL) : NULL;
+        const CCModule* m = mod ? Modules::FindByName(mod) : NULL;
+        if (!m) { l->PushNil(); return 1; }
+        const char* ty = g_api.type(L, 3) == CC_LT_STR ? g_api.tolstring(L, 3, NULL) : "ptr";
+        unsigned char needle[8];
+        int nlen = MemBuildNeedle(L, 2, ty, needle);
+        if (!nlen) { l->PushNil(); return 1; }
+
+        l->CreateTable();
+        int count = 0;
+        MemScanModuleForBytes(L, l, m, needle, nlen, &count, 256);
+        return 1;
+    }
+
+    static int cc_lua_mem_refs(lua_State* L)
+    {
+        ILuaInterface* l = IfaceForState(L);
+        if (!l || !g_api.mem_ok) { if (g_api.push_ok) { g_api.pushnil(L); return 1; } return 0; }
+
+        uintptr_t target = ArgAddr(L, 1);
+        if (!target) { l->PushNil(); return 1; }
+        unsigned char needle[sizeof(void*)];
+        memcpy(needle, &target, sizeof(void*));
+
+        l->CreateTable();
+        int count = 0;
+        const CCModule* mods = NULL;
+        int c = Modules::Snapshot(&mods);
+        for (int i = 0; i < c && count < 256; ++i)
+            MemScanModuleForBytes(L, l, &mods[i], needle, (int)sizeof(void*), &count, 256);
+        return 1;
+    }
+
+    static void InstallMemNamespace(ILuaInterface* L, int realmForLog)
+    {
+        L->CreateTable();
+            ResolveLuaApi();
+            if (Cfg().memapi && g_api.mem_ok) {
+                L->PushCFunction(cc_lua_mem_read); L->SetField(-2, "read");
+                L->PushCFunction(cc_lua_mem_string); L->SetField(-2, "string");
+                L->PushCFunction(cc_lua_mem_bytes); L->SetField(-2, "bytes");
+                L->PushCFunction(cc_lua_mem_deref); L->SetField(-2, "deref");
+                L->PushCFunction(cc_lua_mem_offset); L->SetField(-2, "offset");
+                L->PushCFunction(cc_lua_mem_chain); L->SetField(-2, "chain");
+                L->PushCFunction(cc_lua_mem_find); L->SetField(-2, "find");
+                L->PushCFunction(cc_lua_mem_modules); L->SetField(-2, "modules"); // upgrade: real pointers
+                L->PushCFunction(cc_lua_mem_scan); L->SetField(-2, "scan");
+                L->PushCFunction(cc_lua_mem_search); L->SetField(-2, "search");
+                L->PushCFunction(cc_lua_mem_refs); L->SetField(-2, "refs");
+                L->PushCFunction(cc_lua_mem_region); L->SetField(-2, "region"); // upgrade: real pointers
+                L->PushCFunction(cc_lua_mem_dump); L->SetField(-2, "dump");
+                L->PushCFunction(cc_lua_mem_symbol); L->SetField(-2, "symbol"); // name -> addr
+                L->PushCFunction(cc_lua_mem_threads); L->SetField(-2, "threads"); // upgrade: real pointers
+
+                Log::Notice("[Crash Capture] CRASHCAPTURE_MEMAPI is on: crashcapture.mem.* has raw memory "
+                            "+ pointer access on the %s realm.\n", RealmName(realmForLog));
+            }
+        L->SetField(-2, "mem");
     }
 
     static int cc_lua_frametime(lua_State* L)
@@ -1052,6 +1439,7 @@ namespace CrashCapture {
             L->PushString(CC_OS); L->SetField(-2, "os");
             L->PushString(CC_ARCH); L->SetField(-2, "arch");
             L->PushString(CC_SIDE); L->SetField(-2, "side");
+            InstallMemNamespace(L, r);
         L->SetField(-2, "crashcapture");
         L->Pop();
 

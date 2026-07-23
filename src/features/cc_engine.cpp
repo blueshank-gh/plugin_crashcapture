@@ -106,8 +106,9 @@ namespace CrashCapture {
 
         Log::Panic();
         Platform::DumpThread("engine error", text);
+        Platform::SuppressFurtherReports();
 
-        if (o_syserror) o_syserror("%s", text);
+        if (o_syserror) o_syserror("%s", text); // yea we are not recovering from this.
     }
 
     // --- Host_RunFrame: time work vs sleep ---

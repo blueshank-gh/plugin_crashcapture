@@ -35,7 +35,7 @@
     #define CC_SIDE "client"
 #endif
 
-#define CC_VERSION "1.2.0"
+#define CC_VERSION "1.2.1"
 #define CC_BUILD __DATE__ " " __TIME__
 
 namespace CrashCapture {
@@ -61,6 +61,7 @@ namespace CrashCapture {
         bool symbols;         // CRASHCAPTURE_SYMBOLS
         bool engine_error;    // CRASHCAPTURE_ENGINE_ERROR
         bool frame_profile;   // CRASHCAPTURE_FRAME_PROFILE
+        bool memapi;          // CRASHCAPTURE_MEMAPI
         char dir[512];        // CRASHCAPTURE_DIR
         char script[512];     // CRASHCAPTURE_SCRIPT
     };
@@ -76,6 +77,7 @@ namespace CrashCapture {
     const char* StallClassName(int cls);
     uint64_t MonotonicMs();
     void UtcStamp(char* out, size_t outsz);
+    void UtcStampReadable(char* out, size_t outsz);
 
     typedef void (*SectionFn)(void* arg);
     bool RunProtected(SectionFn fn, void* arg);
@@ -212,6 +214,7 @@ namespace CrashCapture {
         int  RequestPhysResolve(const char* kind, const char* reason, bool writeReport); // classify(+dump if writeReport)+resume-if-physics (1 resumed, 0 handled-no-resume, <0 failed)
         int  SetPhysPaused(int paused);
         int  PhysPaused();
+        void SuppressFurtherReports();
     }
 
     // --------- cc-report ---

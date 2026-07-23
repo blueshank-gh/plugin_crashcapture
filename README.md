@@ -15,7 +15,8 @@ However this can work on heavily modified versions of the game.
 Thanks to **Buildstruct** for infrastructure testing.\
 Based on https://github.com/Python1320/gmsv_segfault
 
-> Warning: do not share crash captures to others unless you have sanitized them, they can contain private/sensitive information about your server!
+> [!WARNING]
+> Do not share crash captures to others unless you have sanitized them, they can contain private/sensitive information about your server!
 
 ## What it does
 
@@ -70,6 +71,10 @@ The defaults are sensible, so you only need these if you want to change somethin
 | `CRASHCAPTURE_DIR` | `crashes` | Folder to write reports into (relative to the GMod root). |
 | `CRASHCAPTURE_MAX_AGE_DAYS` | `14` | At startup, delete reports in the crash folder older than this many days, so they don't pile up. `0` keeps them forever. |
 | `CRASHCAPTURE_SCRIPT` | _(none)_ | Path to a Lua script run in a fresh, isolated state on each crash for live memory diagnostics (see below). Off when unset. |
+
+> [!WARNING]
+> We recommend not having CRASHCAPTURE_MEMAPI enabled, as this exposes the same API layer of mem.* from to one or multiple lua_State's\
+> Proceed with caution when this is enabled, as this is inherently unsafe.
 
 ### Lua Settings
 
