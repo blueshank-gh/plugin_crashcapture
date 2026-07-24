@@ -1433,6 +1433,7 @@ namespace CrashCapture {
             L->PushCFunction(cc_lua_pulse); L->SetField(-2, "pulse");
             L->PushCFunction(cc_lua_physpause); L->SetField(-2, "phys_pause");
             L->PushCFunction(cc_lua_dump); L->SetField(-2, "dump");
+            L->PushCFunction(cc_lua_trace); L->SetField(-2, "trace");
             L->PushCFunction(cc_lua_frametime); L->SetField(-2, "frametime");
             L->PushString(CC_VERSION); L->SetField(-2, "version");
             L->PushString(CC_BUILD); L->SetField(-2, "build");
