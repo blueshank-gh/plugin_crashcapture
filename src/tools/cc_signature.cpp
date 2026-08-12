@@ -340,12 +340,14 @@ namespace CrashCapture {
 
     static const int kMaxTables = 8;
     static const int kMaxCache  = 64;
+    static const int kSigMaxTries = 5;
+    static const uint64_t kSigRetryMs = 1000; // at most one attempt per this many ms
 
     static const CCTarget* g_tables[kMaxTables];
     static int g_tableCount[kMaxTables];
     static int g_nTables = 0;
 
-    struct Cached { const char* key; uintptr_t addr; };
+    struct Cached { const char* key; uintptr_t addr; uint64_t failMs; int tries; };
     static Cached g_cache[kMaxCache];
     static int g_nCache = 0;
 
@@ -399,13 +401,41 @@ namespace CrashCapture {
     uintptr_t Sig::Get(const char* key)
     {
         if (!key) return 0;
-        uintptr_t a;
-        if (CacheLookup(key, &a)) return a;
+
+        uint64_t now = MonotonicMs();
+        for (int i = 0; i < g_nCache; ++i) {
+            if (!g_cache[i].key || strcmp(g_cache[i].key, key) != 0) continue;
+            if (g_cache[i].addr) return g_cache[i].addr;
+            if (g_cache[i].tries >= kSigMaxTries) return 0;
+            if (now - g_cache[i].failMs < kSigRetryMs) return 0;
+            break;
+        }
 
         const CCTarget* tg = FindTarget(key);
         if (!tg) return 0;
-        a = Sig::Resolve(tg);
-        CacheStore(key, a);
-        return a;
+
+        uintptr_t a = Sig::Resolve(tg);
+        if (a) { CacheStore(key, a); return a; }
+
+        for (int i = 0; i < g_nCache; ++i) {
+            if (!g_cache[i].key || strcmp(g_cache[i].key, key) != 0) continue;
+            ++g_cache[i].tries;
+            g_cache[i].failMs = now;
+            if (g_cache[i].tries == kSigMaxTries)
+                Log::Debug("[CC-SIG] '%s' unresolved after %d attempts "
+                           "(module not mapped or pattern drift)\n",
+                           key, kSigMaxTries);
+            return 0;
+        }
+        if (g_nCache < kMaxCache) {
+            g_cache[g_nCache].key = key;
+            g_cache[g_nCache].addr = 0;
+            g_cache[g_nCache].failMs = now;
+            g_cache[g_nCache].tries = 1;
+            ++g_nCache;
+            Log::Debug("[CC-SIG] '%s' unresolved (module not mapped or pattern drift), "
+                       "retrying up to %d times\n", key, kSigMaxTries);
+        }
+        return 0;
     }
 }

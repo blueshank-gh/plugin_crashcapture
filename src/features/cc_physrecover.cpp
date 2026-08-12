@@ -43,7 +43,7 @@ namespace CrashCapture {
         static const int kCoreSpeedChange = 0xE0;
         static const int kCoreRotChange = 0xD0;
         static const int kCoreVec30 = 0x40; // inv_rot_inertia 16B block (name is the x86 offset)
-        static const int kEnvInSim = 0x10D; // inert until phys.env_slot is registered for x64
+        static const int kEnvInSim = 0x10D; // CPhysicsEnvironment.m_inSimulation (vphysics 0x3F773 set / 0x3F7B1 clear)
     #endif
     static const unsigned char kCoreStatic = 0x02; // IVP_Core flags: already immovable
     static const unsigned char kCorePinned = 0x10; // IVP_Core flags: pinned (motion off)
@@ -82,6 +82,13 @@ namespace CrashCapture {
             {{CC_STEP_END, 0, 0}}}, // the guard instruction, i.e. a code addr inside PhysFrame
         {"physobj.vptr", "vphysics", NULL, "48 8D 05 ?? ?? ?? ?? 55 48 89 FA 48 8D 77 08 48 89 07",
             {{CC_STEP_REL, 3, 7}, {CC_STEP_END, 0, 0}}},
+        {"phys.env_slot", "server", NULL,
+            "80 3D ?? ?? ?? ?? 00 0F B6 05 ?? ?? ?? ?? 0F 85 ?? ?? ?? ?? 48 8B 1D ?? ?? ?? ?? 48 83 3B 00",
+            {{CC_STEP_REL, 23, 27}, {CC_STEP_DEREF, 0, 0}, {CC_STEP_END, 0, 0}}},
+        {"phys.remove_sem", "server", NULL,
+            "80 3D ?? ?? ?? ?? 00 0F B6 05 ?? ?? ?? ?? 0F 85 ?? ?? ?? ?? 48 8B 1D ?? ?? ?? ?? 48 83 3B 00 "
+            "0F 84 ?? ?? ?? ?? 84 C0 0F 85 ?? ?? ?? ?? E8 ?? ?? ?? ??",
+            {{CC_STEP_REL, 46, 50}, {CC_STEP_REL, 2, 7}, {CC_STEP_END, 0, 0}}},
     #endif
     };
 
@@ -129,21 +136,33 @@ namespace CrashCapture {
     // &IVP_Event_Manager::mode drain loop (simulate_time_events)
     int* Phys::Recover::EventLoopMode()
     {
-    #if defined(CC_X86)
-        uintptr_t slot = Sig::Get("phys.env_slot"); // &physenv
-        if (!slot || !Mem::IsReadable((void*)slot, sizeof(void*))) return NULL;
-        uintptr_t env = *(uintptr_t*)slot; // CPhysicsEnvironment*
-        if (!env || !Mem::IsReadable((void*)(env + 4), sizeof(void*))) return NULL;
-        uintptr_t ivpEnv = *(uintptr_t*)(env + 4); // IVP_Environment* CPhysEnv[1]
-        if (!ivpEnv || !Mem::IsReadable((void*)(ivpEnv + 4), sizeof(void*))) return NULL;
-        uintptr_t tmgr = *(uintptr_t*)(ivpEnv + 4); // IVP_Time_Manager* IVP_Env[1]
-        if (!tmgr || !Mem::IsReadable((void*)(tmgr + 4), sizeof(void*))) return NULL;
-        uintptr_t emgr = *(uintptr_t*)(tmgr + 4); // IVP_Event_Manager* time_mgr[1]
-        if (!emgr || !Mem::IsReadable((void*)(emgr + 4), sizeof(int))) return NULL;
-        return (int*)(emgr + 4); // &mode event_mgr[1]
-    #else
-        return NULL;
-    #endif
+        #if defined(CC_X86)
+            uintptr_t slot = Sig::Get("phys.env_slot"); // &physenv
+            if (!slot || !Mem::IsReadable((void*)slot, sizeof(void*))) return NULL;
+            uintptr_t env = *(uintptr_t*)slot; // CPhysicsEnvironment*
+            if (!env || !Mem::IsReadable((void*)(env + 4), sizeof(void*))) return NULL;
+            uintptr_t ivpEnv = *(uintptr_t*)(env + 4); // IVP_Environment* CPhysEnv[1]
+            if (!ivpEnv || !Mem::IsReadable((void*)(ivpEnv + 4), sizeof(void*))) return NULL;
+            uintptr_t tmgr = *(uintptr_t*)(ivpEnv + 4); // IVP_Time_Manager* IVP_Env[1]
+            if (!tmgr || !Mem::IsReadable((void*)(tmgr + 4), sizeof(void*))) return NULL;
+            uintptr_t emgr = *(uintptr_t*)(tmgr + 4); // IVP_Event_Manager* time_mgr[1]
+            if (!emgr || !Mem::IsReadable((void*)(emgr + 4), sizeof(int))) return NULL;
+            return (int*)(emgr + 4); // &mode event_mgr[1]
+        #elif defined(CC_X64)
+            uintptr_t slot = Sig::Get("phys.env_slot"); // &physenv
+            if (!slot || !Mem::IsReadable((void*)slot, sizeof(void*))) return NULL;
+            uintptr_t env = *(uintptr_t*)slot; // CPhysicsEnvironment*
+            if (!env || !Mem::IsReadable((void*)(env + 8), sizeof(void*))) return NULL;
+            uintptr_t ivpEnv = *(uintptr_t*)(env + 8); // IVP_Environment*
+            if (!ivpEnv || !Mem::IsReadable((void*)(ivpEnv + 8), sizeof(void*))) return NULL;
+            uintptr_t tmgr = *(uintptr_t*)(ivpEnv + 8); // IVP_Time_Manager*
+            if (!tmgr || !Mem::IsReadable((void*)(tmgr + 8), sizeof(void*))) return NULL;
+            uintptr_t emgr = *(uintptr_t*)(tmgr + 8); // IVP_Event_Manager*
+            if (!emgr || !Mem::IsReadable((void*)(emgr + 8), sizeof(int))) return NULL;
+            return (int*)(emgr + 8); // &mode (drain loop exits on mode==1)
+        #else
+            return NULL;
+        #endif
     }
 
     // read IVP's time-event queue (min_hash = time_mgr+8) live load
@@ -161,6 +180,21 @@ namespace CrashCapture {
             uintptr_t mh = *(uintptr_t*)(tmgr + 8);            // min_hash (the IVP_U_Min_List)
             if (!mh || !Mem::IsReadable((void*)mh, 24)) return false;
             if (countOut) *countOut = *(uint32_t*)(mh + 20);
+            if (capOut)   *capOut   = *(uint16_t*)(mh + 0);
+            if (listOut)  *listOut  = mh;
+            return true;
+        #elif defined(CC_X64)
+            uintptr_t slot = Sig::Get("phys.env_slot");
+            if (!slot || !Mem::IsReadable((void*)slot, sizeof(void*))) return false;
+            uintptr_t env = *(uintptr_t*)slot;
+            if (!env || !Mem::IsReadable((void*)(env + 8), sizeof(void*))) return false;
+            uintptr_t ivpEnv = *(uintptr_t*)(env + 8);
+            if (!ivpEnv || !Mem::IsReadable((void*)(ivpEnv + 8), sizeof(void*))) return false;
+            uintptr_t tmgr = *(uintptr_t*)(ivpEnv + 8);
+            if (!tmgr || !Mem::IsReadable((void*)(tmgr + 0x10), sizeof(void*))) return false;
+            uintptr_t mh = *(uintptr_t*)(tmgr + 0x10); // min_hash (the drain queue)
+            if (!mh || !Mem::IsReadable((void*)mh, 32)) return false;
+            if (countOut) *countOut = *(uint32_t*)(mh + 28);
             if (capOut)   *capOut   = *(uint16_t*)(mh + 0);
             if (listOut)  *listOut  = mh;
             return true;
@@ -185,6 +219,11 @@ namespace CrashCapture {
     void Phys::Recover::NoteHookLag(uintptr_t mindist)
     {
         if (!mindist || (mindist & (sizeof(void*) - 1))) return;
+        if (!Mem::IsReadable((void*)(mindist + kMindistObj0), sizeof(uintptr_t)) ||
+            !Mem::IsReadable((void*)(mindist + kMindistObj1), sizeof(uintptr_t))) {
+            g_hookLagged = true;
+            return;
+        }
         RawIvpAdd(*(uintptr_t*)(mindist + kMindistObj0));
         RawIvpAdd(*(uintptr_t*)(mindist + kMindistObj1));
         g_hookLagged = true;
@@ -215,6 +254,29 @@ namespace CrashCapture {
                 ++la->events;
                 int before = g_nRawIvp;
                 RawIvpAdd(*(uintptr_t*)(ev + kMindistObj0)); // non-mindist events fail AsPhysObject later
+                RawIvpAdd(*(uintptr_t*)(ev + kMindistObj1));
+                la->objs += g_nRawIvp - before;
+            }
+        #elif defined(CC_X64)
+            ScanListArgs* la = (ScanListArgs*)arg;
+            uintptr_t mh = la->mh;
+            if (!mh || !Mem::IsReadable((void*)mh, 32)) return;
+            uint32_t cap = *(uint16_t*)(mh + 0);
+            uintptr_t elems = *(uintptr_t*)(mh + 8);
+            la->count = *(uint32_t*)(mh + 28);
+            if (!cap || !elems || !Mem::IsReadable((void*)elems, (size_t)cap * 24))
+                return;
+
+            uint32_t idx = *(uint32_t*)(mh + 24); // first_element, 0xFFFF terminates
+            for (uint32_t step = 0; step < cap && idx < cap; ++step) {
+                uintptr_t slot = elems + (uintptr_t)idx * 24;
+                uintptr_t ev = *(uintptr_t*)(slot + 16); // IVP_Time_Event*
+                idx = *(uint16_t*)(slot + 4); // next in schedule order
+                if (!ev || (ev & (sizeof(void*) - 1))) continue;
+                if (!Mem::IsReadable((void*)ev, kMindistObj1 + sizeof(void*))) continue;
+                ++la->events;
+                int before = g_nRawIvp;
+                RawIvpAdd(*(uintptr_t*)(ev + kMindistObj0));
                 RawIvpAdd(*(uintptr_t*)(ev + kMindistObj1));
                 la->objs += g_nRawIvp - before;
             }
@@ -261,7 +323,7 @@ namespace CrashCapture {
         return p && !(p & (sizeof(void*) - 1)) && Mem::IsReadable((void*)p, sizeof(void*));
     }
 
-    static uintptr_t AsPhysObject(uintptr_t p)
+    static uintptr_t AsPhysObjectRaw(uintptr_t p)
     {
         uintptr_t vptr = Vptr();
         if (!vptr || !PtrOk(p)) return 0;
@@ -274,6 +336,35 @@ namespace CrashCapture {
         uintptr_t back = obj + kObjIvp; // back-link must agree
         if (!Mem::IsReadable((void*)back, sizeof(void*)) || *(uintptr_t*)back != p) return 0;
         return obj;
+    }
+
+    static bool ObjLiveDirect(uintptr_t p, uintptr_t vptr)
+    {
+        if (!p || (p & (sizeof(void*) - 1))) return false;
+        if (*(uintptr_t*)p == vptr) return true; // direct CPhysicsObject
+        uintptr_t obj = *(uintptr_t*)(p + kIvpToObj);
+        return obj && !(obj & (sizeof(void*) - 1)) &&
+               *(uintptr_t*)obj == vptr && *(uintptr_t*)(obj + kObjIvp) == p;
+    }
+
+    struct LiveCheckArgs { uintptr_t m, vptr; bool live; };
+    static void LiveCheckInner(void* arg)
+    {
+        LiveCheckArgs* la = (LiveCheckArgs*)arg;
+        la->live = ObjLiveDirect(*(uintptr_t*)(la->m + kMindistObj0), la->vptr) &&
+                   ObjLiveDirect(*(uintptr_t*)(la->m + kMindistObj1), la->vptr);
+    }
+
+    bool Phys::Recover::MindistObjectsLive(void* mindist)
+    {
+        uintptr_t vptr = Vptr();
+        if (!mindist || !vptr) return true;
+        LiveCheckArgs la;
+        la.m = (uintptr_t)mindist;
+        la.vptr = vptr;
+        la.live = false;
+        RunProtectedQuiet(LiveCheckInner, &la);
+        return la.live;
     }
 
     static bool Known(uintptr_t obj)
@@ -294,7 +385,7 @@ namespace CrashCapture {
         int added = 0, dropped = 0;
         for (int i = 0; i < g_nRawIvp; ++i) {
             if ((int)g_rawCount[i] < thresh) { ++dropped; continue; }
-            uintptr_t obj = AsPhysObject(g_rawIvp[i]);
+            uintptr_t obj = AsPhysObjectRaw(g_rawIvp[i]);
             if (obj && !Known(obj) && g_nPending < kMaxPhys) { g_pending[g_nPending++] = obj; ++added; }
         }
         g_nRawIvp = 0;
@@ -316,7 +407,7 @@ namespace CrashCapture {
                 continue;
             }
             uintptr_t v = *(uintptr_t*)a;
-            uintptr_t obj = AsPhysObject(v);
+            uintptr_t obj = AsPhysObjectRaw(v);
             if (!obj || Known(obj)) continue;
             if (g_nPending >= kMaxPhys) break;
             g_pending[g_nPending++] = obj;
@@ -517,6 +608,7 @@ namespace CrashCapture {
         }
 
         if (Cfg().phys_hook) Phys::Bind::Install();
+        Phys::Bind::RefreshToggles();
 
         // undo the drain-loop escape from mode=1
         if (g_modeForced) {
@@ -700,6 +792,29 @@ namespace CrashCapture {
         }
     }
 
+    static bool ResumeOutToPhysFrame(void* ucontext)
+    {
+        PhysFrameStart();
+        ResumeTarget t;
+        memset(&t, 0, sizeof(t));
+        RunProtectedQuiet(DoResumeWalk, &t);
+        if (!t.have) return false;
+        Platform::SetPhysPaused(1);
+        RestorePhysEnvState();
+        ResumeOut(ucontext, &t);
+        return true;
+    }
+
+    static bool InDrainLoop(uintptr_t pc)
+    {
+        uintptr_t ste = Sig::Get("hook.simulate_time_events");
+        if (!ste || !pc) return true; // unknown -> keep the safe mode=1 escape
+        void* steFn = _Unwind_FindEnclosingFunction((void*)ste);
+        void* pcFn = _Unwind_FindEnclosingFunction((void*)pc);
+        if (!steFn || !pcFn) return true; // can't resolve -> keep the safe escape
+        return pcFn == steFn;
+    }
+
     bool Phys::Recover::ResumeFromFault(int sig, void* ucontext)
     {
         if (sig != SIGSEGV && sig != SIGBUS && sig != SIGFPE && sig != SIGILL) return false;
@@ -711,17 +826,9 @@ namespace CrashCapture {
             return false;
         }
         if (g_physResumeCount >= kMaxPhysResume) return false;
+        if (!PhysPausedSlot()) return false;
 
-        PhysFrameStart(); // ensure the resume anchor is resolved
-        ResumeTarget t;
-        memset(&t, 0, sizeof(t));
-        RunProtectedQuiet(DoResumeWalk, &t); // never let the walk recursive-kill us
-        if (!t.have) return false;
-
-        // physics off so the next tick doesn't re-fault on the same garbage.
-        Platform::SetPhysPaused(1);
-        RestorePhysEnvState(); // we bailed out of Simulate mid-tick -> un-defer deletes
-        ResumeOut(ucontext, &t);
+        if (!ResumeOutToPhysFrame(ucontext)) return false;
 
         ++g_physResumeCount;
         Log::F("[Crash Capture] physics fault recovered: resumed Host_RunFrame (resume #%u; physics paused).\n", g_physResumeCount);
@@ -732,7 +839,6 @@ namespace CrashCapture {
 
     int Phys::Recover::ResumeFromHang(void* ucontext, bool forceResume)
     {
-        (void)forceResume; // legacy gate arg -- the mode-write escape needs no safe PC
         if (!Cfg().phys_recover || !ucontext) return PHYS_NORESUME;
         if (g_physResumeCount >= kMaxPhysResume) return PHYS_NORESUME;
 
@@ -789,6 +895,18 @@ namespace CrashCapture {
 
         int* mode = EventLoopMode();
         if (mode) { *mode = 1; g_modeForced = true; } // drain loop exits after the cascade
+
+        // the mode=1 escape only rescues a drain-loop hang; a tick stuck inside one
+        // PSI event never re-checks it, so force a resume out to PhysFrame instead.
+        if (forceResume || !InDrainLoop(pc)) {
+            if (ResumeOutToPhysFrame(ucontext)) {
+                ++g_physResumeCount;
+                Log::F("[Crash Capture] physics hang recovered: resumed Host_RunFrame "
+                       "(escape #%u; physics paused).\n", g_physResumeCount);
+                Log::Flush();
+                return PHYS_RESUMED;
+            }
+        }
 
         // pause the next PhysFrame until offenders are frozen.
         Platform::SetPhysPaused(1);

@@ -4,6 +4,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <atomic>
 
 #if defined(_WIN32)
     #define CC_WINDOWS 1
@@ -35,7 +36,7 @@
     #define CC_SIDE "client"
 #endif
 
-#define CC_VERSION "1.3.0"
+#define CC_VERSION "1.4.0"
 #define CC_BUILD __DATE__ " " __TIME__
 
 namespace CrashCapture {
@@ -64,6 +65,7 @@ namespace CrashCapture {
         bool profile;         // CRASHCAPTURE_PROFILE
         int profile_window;   // CRASHCAPTURE_PROFILE_WINDOW
         bool memapi;          // CRASHCAPTURE_MEMAPI
+        bool patches;         // CRASHCAPTURE_PATCHES
         char dir[512];        // CRASHCAPTURE_DIR
         char script[512];     // CRASHCAPTURE_SCRIPT
     };
@@ -140,6 +142,7 @@ namespace CrashCapture {
     namespace Mem {
         bool IsReadable(const void* p, size_t n);
         bool IsExecutable(uintptr_t addr);
+        bool Protect(void* addr, size_t len, bool writable, bool exec);
     }
     namespace Sym {
         void Init();
@@ -203,6 +206,7 @@ namespace CrashCapture {
             void Uninstall();
             uint64_t LagEpisodes();
             uint64_t LastLagTickMs();
+            void RefreshToggles();
         }
     }
 
@@ -253,9 +257,9 @@ namespace CrashCapture {
         void Stop();
         void Pulse();
     }
-    extern volatile uint64_t g_lastPulseMs;
-    extern volatile uint64_t g_graceUntilMs;
-    extern volatile uint64_t g_graceAnchorPulse;
+    extern std::atomic<uint64_t> g_lastPulseMs;
+    extern std::atomic<uint64_t> g_graceUntilMs;
+    extern std::atomic<uint64_t> g_graceAnchorPulse;
 
     #if defined(CC_WINDOWS)
         extern void* g_gameThreadHandle;

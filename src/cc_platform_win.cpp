@@ -246,6 +246,8 @@ namespace CrashCapture {
         Report::Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
         Report::Section("Lua",         Sec_Lua,       NULL, false);
         Report::Section("Modules",     Sec_Modules,   NULL, false);
+        if (Patch::Count() > 0)
+            Report::Section("Patches", Patch::ReportSection, NULL, false);
         Report::Section("Diagnostics", Diag::Section,  g_curCtx, false);
     }
 
@@ -429,6 +431,8 @@ namespace CrashCapture {
         if (suspended) ResumeThread(th);
 
         Report::Section("Modules", Sec_Modules, NULL, false);
+        if (Patch::Count() > 0)
+            Report::Section("Patches", Patch::ReportSection, NULL, false);
         Report::Section("Diagnostics", Diag::Section, g_curCtx, false);
 
         Report::Footer();
@@ -664,9 +668,14 @@ namespace CrashCapture {
     static DWORD WINAPI DumpWaiterThread(LPVOID)
     {
         HANDLE h[2] = { g_dumpEvent, g_dumpStop };
+        uint64_t lastDumpMs = 0;
         for (;;) {
             DWORD w = WaitForMultipleObjects(2, h, FALSE, INFINITE);
             if (w != WAIT_OBJECT_0) break;
+            uint64_t now = MonotonicMs();
+            int deb = Cfg().report_debounce_sec;
+            if (deb > 0 && lastDumpMs && (now - lastDumpMs) < (uint64_t)deb * 1000ull) continue;
+            lastDumpMs = now;
             DumpNow("manual dump requested (event)");
         }
         return 0;
@@ -718,6 +727,9 @@ namespace CrashCapture {
         SetUnhandledExceptionFilter(g_prevFilter);
         g_prevFilter = NULL;
         signal(SIGABRT, SIG_DFL);
+        set_terminate(nullptr);
+        _set_purecall_handler(nullptr);
+        _set_invalid_parameter_handler(nullptr);
         Sym::Cleanup();
     }
 }

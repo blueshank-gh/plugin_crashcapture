@@ -3,6 +3,7 @@
 #include "crashcapture.h"
 #include "features/cc_physrecover.h"
 #include "features/cc_profile.h"
+#include "tools/cc_patch.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -174,6 +175,7 @@ namespace CrashCapture {
         c.profile_window = EnvInt("CRASHCAPTURE_PROFILE_WINDOW", 300);
         if (c.profile_window < 0) c.profile_window = 0;
         c.memapi = EnvInt("CRASHCAPTURE_MEMAPI", 0) != 0;
+        c.patches = EnvInt("CRASHCAPTURE_PATCHES", 1) != 0;
 
         // store crashes in <gmod-root>/crashes
         const char* dir = CfgRaw("CRASHCAPTURE_DIR");
@@ -328,6 +330,7 @@ namespace CrashCapture {
 
     void Pulse()
     {
+        if (!g_initialized) return;
         static bool first = true;
         if (first) { first = false; Log::Debug("[Crash Capture] first pulse\n"); }
         Watchdog::Pulse();
@@ -338,6 +341,7 @@ namespace CrashCapture {
         Profile::Poll();
         Lua::PollRecovery();
         Lua::PollReady();
+        Patch::DrainQueue();
     }
 
     const char* StallClassName(int cls)
@@ -355,7 +359,7 @@ namespace CrashCapture {
     {
         uint64_t until = MonotonicMs() + (uint64_t)seconds * 1000ull;
         if (until > g_graceUntilMs) g_graceUntilMs = until;
-        g_graceAnchorPulse = g_lastPulseMs;
+        g_graceAnchorPulse = g_lastPulseMs.load();
     }
 
     void DumpNow(const char* reason)
@@ -434,6 +438,7 @@ namespace CrashCapture {
             Log::F("- **pulse** : last heartbeat %llu ms ago\n",
                 (unsigned long long)(MonotonicMs() - g_lastPulseMs));
         else Log::Str("- **pulse** : never (no heartbeat source in this configuration)\n");
+        Patch::ReportHeader();
         Log::Flush();
 
         Report::Banner(kind, reason, Log::Path());

@@ -47,8 +47,8 @@ namespace CrashCapture {
     static volatile sig_atomic_t g_pendForceResume = 0; // physresolve: 1 = resume even mid list-mutation (give-up valve)
 
     // RunProtected state (single report path, guarded by g_inReport)
-    static sigjmp_buf g_jb;
-    static volatile sig_atomic_t g_protArmed = 0;
+    static thread_local sigjmp_buf g_jb;
+    static thread_local volatile sig_atomic_t g_protArmed = 0;
 
     static int gettid_() { return (int)syscall(SYS_gettid); }
 
@@ -469,6 +469,8 @@ namespace CrashCapture {
         Report::Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
         Report::Section("Lua", Sec_Lua, NULL, false);
         Report::Section("Modules", Sec_Modules, NULL, false);
+        if (Patch::Count() > 0)
+            Report::Section("Patches", Patch::ReportSection, NULL, false);
         Report::Section("Diagnostics", Diag::Section, uctx, false);
         Report::Footer();
         Log::Close();
@@ -582,15 +584,25 @@ namespace CrashCapture {
     static void ManualDumpHandler(int sig, siginfo_t* info, void* ucontext)
     {
         Log::Panic();
-        int self = gettid_();
-        if (g_gameThreadTid && self == g_gameThreadTid) {
-            if (!g_inReport) {
-                g_inReport = 1;
-                WriteReport("dump", "manual dump requested (SIGUSR1)", ucontext);
-                g_inReport = 0;
+        bool dump = true;
+        {
+            static uint64_t lastMs = 0;
+            uint64_t now = MonotonicMs();
+            int deb = Cfg().report_debounce_sec;
+            if (deb > 0 && lastMs && (now - lastMs) < (uint64_t)deb * 1000ull) dump = false;
+            else lastMs = now;
+        }
+        if (dump) {
+            int self = gettid_();
+            if (g_gameThreadTid && self == g_gameThreadTid) {
+                if (!g_inReport) {
+                    g_inReport = 1;
+                    WriteReport("dump", "manual dump requested (SIGUSR1)", ucontext);
+                    g_inReport = 0;
+                }
+            } else {
+                Platform::DumpThread("dump", "manual dump requested (SIGUSR1)");
             }
-        } else {
-            Platform::DumpThread("dump", "manual dump requested (SIGUSR1)");
         }
 
         // don't swallow a prior USR1 owner, but never chain into SIG_DFL (that would kill us).
