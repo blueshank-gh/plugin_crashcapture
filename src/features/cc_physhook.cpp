@@ -114,6 +114,28 @@ namespace CrashCapture {
         return 1; // converged, the retained mindist is stale
     }
 
+    // --- gm.phys.mindist_stale_ff (PATCH_DETOUR) ---
+    typedef int (*Fn_ff)(void*, void*, void*, void*, void*);
+    static Fn_ff o_ff = 0;
+
+    static int h_ff(void* mms, void* e1, void* e2, void* cA, void* cB)
+    {
+        if (mms && Mem::IsReadable(mms, sizeof(void*))) {
+            void* mindist = *(void**)mms;
+            if (mindist && !Phys::Recover::MindistObjectsLive(mindist)) {
+                Log::Debug("[CC-PATCH] p_minimize_FF skipped: retained mindist 0x%lx "
+                           "references a stale object\n",
+                           (unsigned long)(uintptr_t)mindist);
+                return 1; // converged, the retained mindist is stale
+            }
+        }
+        if (e1 && e2)
+            return o_ff(mms, e1, e2, cA, cB);
+        Log::Debug("[CC-PATCH] p_minimize_FF skipped: null edge (mindist 0x%lx)\n",
+                (unsigned long)(uintptr_t)mms);
+        return 1; // converged, the retained mindist is stale
+    }
+
     // --- gm.phys.ovtree_hash_remove (PATCH_DETOUR) ---
     struct VHashArgs { void* hash; const void* elem; unsigned idx; bool present; };
     static void VHashFindInner(void* arg)
@@ -218,6 +240,24 @@ namespace CrashCapture {
                 18,
                 (void*)h_pk,
                 (void**)&o_pk,
+                true, false, false,
+            },
+            {
+                "gm.phys.mindist_stale_ff",
+                "gmod IVP retained-mindist UAF",
+                "skip p_minimize_FF when the retained mindist references a stale object",
+                CC_PATCH_DETOUR,
+                {"patch.p_minimize_ff", "vphysics",
+                    "_ZN27IVP_Mindist_Minimize_Solver13p_minimize_FFEPK16IVP_Compact_EdgeS2_P21IVP_Cache_Ledge_PointS4_",
+                    "55 89 E5 57 56 53 81 EC 9C 02 00 00 8B 45 08",
+                    {{CC_STEP_END, 0, 0}}},
+                0,
+                {0x55,0x89,0xE5,0x57,0x56,0x53,0x81,0xEC,0x9C,0x02,0x00,0x00,0x8B,0x45,0x08,0xC7,0x85,0x80,0xFD,0xFF,0xFF,0x03,0x00,0x00},
+                {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+                {0},
+                24,
+                (void*)h_ff,
+                (void**)&o_ff,
                 true, false, false,
             },
             {
@@ -381,6 +421,23 @@ namespace CrashCapture {
                 "skip p_minimize_PK when handed a null edge (stale hull geometry)",
                 CC_PATCH_DETOUR,
                 {"patch.p_minimize_pk", "vphysics", NULL,
+                    "55 48 89 E5 41 57 49 89 CF 41 56 49 89 F6 4C 89 FE 41 55 4C 8D 6D C0 41 54 4C 89 E9 49 89 D4 53 4C 89 C2 4C 89 C3 48 83",
+                    {{CC_STEP_END, 0, 0}}},
+                0,
+                {0x55,0x48,0x89,0xE5,0x41,0x57,0x49,0x89,0xCF,0x41,0x56,0x49,0x89,0xF6,0x4C,0x89,0xFE,0x41,0x55,0x4C,0x8D,0x6D,0xC0,0x41},
+                {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+                {0},
+                24,
+                (void*)h_pk,
+                (void**)&o_pk,
+                true, false, false,
+            },
+            {
+                "gm.phys.mindist_stale_ff",
+                "gmod IVP retained-mindist UAF",
+                "skip p_minimize_FF when the retained mindist references a stale object",
+                CC_PATCH_DETOUR,
+                {"patch.p_minimize_ff", "vphysics", NULL,
                     "55 48 89 E5 41 57 4D 89 C7 41 56 41 BE 03 00 00 00 41 55 41 54 49 89 F4 53 48 81 EC 78 03 00 00",
                     {{CC_STEP_END, 0, 0}}},
                 0,
@@ -388,8 +445,8 @@ namespace CrashCapture {
                 {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
                 {0},
                 24,
-                (void*)h_pk,
-                (void**)&o_pk,
+                (void*)h_ff,
+                (void**)&o_ff,
                 true, false, false,
             },
             {
