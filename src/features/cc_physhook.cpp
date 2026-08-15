@@ -167,6 +167,56 @@ namespace CrashCapture {
     static Fn_minlist_add o_minlist_add = 0;
     static uint32_t h_minlist_add(void* self, void* elem, float value);
 
+    typedef void (*Fn_remove_coc)(void*, void*, void*);
+    static Fn_remove_coc o_remove_coc = 0;
+
+    #if defined(CC_X86)
+        static const int kCocCount = 0x1E;
+        static const int kCocElems = 0x20;
+        static const int kCocSimRead = 0x24;
+        static const int kCocWrapRead = 0x14;
+    #elif defined(CC_X64)
+        static const int kCocCount = 0x3A;
+        static const int kCocElems = 0x40;
+        static const int kCocSimRead = 0x48;
+        static const int kCocWrapRead = 0x28;
+    #else
+        static const int kCocCount = 0, kCocElems = 0, kCocSimRead = 0, kCocWrapRead = 0;
+    #endif
+
+    struct CocArgs { void* sim; void* ctrl; bool found; };
+    static void CocScanInner(void* arg)
+    {
+        CocArgs* a = (CocArgs*)arg;
+        unsigned short n = *(unsigned short*)((char*)a->sim + kCocCount);
+        if (!n) return;
+        void** elems = *(void***)((char*)a->sim + kCocElems);
+        if (!elems) return;
+        for (unsigned short i = 0; i < n; ++i) {
+            void* w = elems[i];
+            if (!w) continue;
+            if (!Mem::IsReadable(w, kCocWrapRead)) continue;
+            if (*(void**)w == a->ctrl) { a->found = true; return; }
+        }
+    }
+
+    static void h_remove_coc(void* sim, void* core, void* ctrl)
+    {
+        if (sim && ctrl && Mem::IsReadable(sim, kCocSimRead)) {
+            CocArgs a = { sim, ctrl, false };
+            RunProtectedQuiet(CocScanInner, &a);
+            if (a.found) {
+                o_remove_coc(sim, core, ctrl);
+                return;
+            }
+            Log::Debug("[CC-PATCH] remove_controller_of_core skipped: controller 0x%lx not in sim-unit 0x%lx\n",
+                    (unsigned long)(uintptr_t)ctrl, (unsigned long)(uintptr_t)sim);
+            return;
+        }
+        Log::Debug("[CC-PATCH] remove_controller_of_core skipped: unreadable sim-unit 0x%lx\n",
+                (unsigned long)(uintptr_t)sim);
+    }
+
     #if defined(CC_X86)
         // --- gm.phys.watcher_stale_mindist (PATCH_DETOUR, x86 only) ---
         typedef void (*Fn_oow)(void*, void*);
@@ -393,6 +443,24 @@ namespace CrashCapture {
                 (void**)&o_minlist_add,
                 true, false, false,
             },
+            {
+                "gm.phys.ctrl_remove_absent",
+                "gmod IVP teardown UAF",
+                "skip remove_controller_of_core when the controller is absent from the sim unit's controller list",
+                CC_PATCH_DETOUR,
+                {"patch.remove_coc", "vphysics",
+                    "_ZN19IVP_Simulation_Unit25remove_controller_of_coreEP8IVP_CoreP14IVP_Controller",
+                    "55 89 E5 57 56 53 83 EC 1C 8B 45 08 8B 55 0C 8B 4D 10 0F B7 70 1E",
+                    {{CC_STEP_END, 0, 0}}},
+                0,
+                {0x55,0x89,0xE5,0x57,0x56,0x53,0x83,0xEC,0x1C,0x8B,0x45,0x08,0x8B,0x55,0x0C,0x8B,0x4D,0x10,0x0F,0xB7,0x70,0x1E},
+                {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+                {0},
+                22,
+                (void*)h_remove_coc,
+                (void**)&o_remove_coc,
+                true, false, false,
+            },
         };
     #elif defined(CC_X64)
         static const CCPatch kPhysPatches[] = {
@@ -561,6 +629,23 @@ namespace CrashCapture {
                 23,
                 (void*)h_minlist_add,
                 (void**)&o_minlist_add,
+                true, false, false,
+            },
+            {
+                "gm.phys.ctrl_remove_absent",
+                "gmod IVP teardown UAF",
+                "skip remove_controller_of_core when the controller is absent from the sim unit's controller list",
+                CC_PATCH_DETOUR,
+                {"patch.remove_coc", "vphysics", NULL,
+                    "55 48 89 E5 41 55 49 89 FD 41 54 53 48 83 EC 08 0F B7 5F 3A 48 8B 4F 40",
+                    {{CC_STEP_END, 0, 0}}},
+                0,
+                {0x55,0x48,0x89,0xE5,0x41,0x55,0x49,0x89,0xFD,0x41,0x54,0x53,0x48,0x83,0xEC,0x08,0x0F,0xB7,0x5F,0x3A,0x48,0x8B,0x4F,0x40},
+                {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+                {0},
+                24,
+                (void*)h_remove_coc,
+                (void**)&o_remove_coc,
                 true, false, false,
             },
         };

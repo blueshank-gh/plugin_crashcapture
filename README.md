@@ -197,6 +197,7 @@ They're compiled for both Linux x86 and x64 servers (the one exception is `gm.ph
 - `gm.phys.minlist_walk_bound_a` / `gm.phys.minlist_walk_bound_b` - stop a freeze where physics scheduling gets stuck in a loop.
 - `gm.phys.minlist_replace` - replaces `IVP_U_Min_List::add` with a corrected copy of the stock algorithm.
 - `gm.phys.minlist_skip_list` - disables the physics min-list skip-list (long-jump) optimization outright.
+- `gm.phys.ctrl_remove_absent` - stops a crash when a constraint is removed from a physics object that has already been torn down.
 
 Every fix is tied to the exact game code it repairs.\
 If a Garry's Mod update changes that code, the fix simply doesn't apply, the plugin never writes over code it doesn't recognize, so a fix that's no longer valid can't cause new problems.\
