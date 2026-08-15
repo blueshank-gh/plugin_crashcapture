@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest a feature or improvement.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to solve.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposed solution
+      description: How you imagine it working.
+    validations:
+      required: false
+  - type: dropdown
+    id: type
+    attributes:
+      label: Type
+      description: What part of the plugin this relates to.
+      multiple: true
+      options:
+        - lua
+        - engine
+        - physics
+        - external
+        - internal
+        - binary
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This may be architecture-breaking or need a `refactor` / `arch-sensitive` label
+        - label: This only targets a specific platform
