@@ -2,6 +2,7 @@
 // Linux only, no we are not doing windows.
 
 #include "features/cc_physrecover.h"
+#include "features/cc_physpatch.h"
 #include "tools/cc_signature.h"
 
 #if defined(CC_LINUX)
@@ -608,7 +609,7 @@ namespace CrashCapture {
         }
 
         if (Cfg().phys_hook) Phys::Bind::Install();
-        Phys::Bind::RefreshToggles();
+        Phys::Patch::RefreshToggles();
 
         // undo the drain-loop escape from mode=1
         if (g_modeForced) {

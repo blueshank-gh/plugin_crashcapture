@@ -156,6 +156,8 @@ namespace CrashCapture {
         if (c.report_debounce_sec < 0) c.report_debounce_sec = 0;
         c.phys_resolve_delay = EnvInt("CRASHCAPTURE_PHYS_RESOLVE_DELAY", 3);
         if (c.phys_resolve_delay < 0) c.phys_resolve_delay = 0;
+        c.phys_defer_eps_us = EnvInt("CRASHCAPTURE_PHYS_DEFER_EPS_US", 0);
+        if (c.phys_defer_eps_us < 0) c.phys_defer_eps_us = 0;
 
         // First-chance VEH off on the client: the D3D/ShaderAPI bring-up uses SEH as control flow and intercepting it can break startup.
         #ifdef INTERFACE_PLUGIN

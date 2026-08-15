@@ -943,6 +943,7 @@ namespace CrashCapture {
         t[n++] = {"phys_resume", CK_BOOL, &c.phys_resume, 0, false};
         t[n++] = {"phys_recover", CK_BOOL, &c.phys_recover, 0, false};
         t[n++] = {"phys_resolve_delay", CK_INT, &c.phys_resolve_delay, 0, false};
+        t[n++] = {"phys_defer_eps_us", CK_INT, &c.phys_defer_eps_us, 0, false};
         t[n++] = {"phys_pin", CK_BOOL, &c.phys_pin, 0, false};
         t[n++] = {"phys_hook", CK_BOOL, &c.phys_hook, 0, true};
         t[n++] = {"phys_hook_ms", CK_INT, &c.phys_hook_ms, 0, false};

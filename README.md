@@ -67,6 +67,7 @@ The defaults are sensible, so you only need these if you want to change somethin
 | `CRASHCAPTURE_PHYS_RECOVER` | `1` | Linux only, after a physics stall, freeze the offending objects so the tick can finish instead of stalling again. |
 | `CRASHCAPTURE_PHYS_PIN` | `0` | Linux only, also pin the offending objects in place (motion disabled) rather than only reporting them. |
 | `CRASHCAPTURE_PHYS_RESOLVE_DELAY` | `3` | Linux only, frames to wait after a physics recovery before firing the `crashcapture.physresolve` hook, so physics has settled. |
+| `CRASHCAPTURE_PHYS_DEFER_EPS_US` | `0` | Linux only, defer retained-mindist events whose next refire lands within this many microseconds of the current drain position. Experimental. |
 | `CRASHCAPTURE_REPORT_DEBOUNCE` | `15` | Minimum seconds between repeat reports for the same recurring condition. `0` disables the debounce. |
 | `CRASHCAPTURE_ENGINE_ERROR` | `1` | Capture engine-side fatal errors (`Sys_Error` and friends) instead of letting them exit silently. |
 | `CRASHCAPTURE_FRAME_PROFILE` | `1` | Collect per-frame timing metrics (what `crashcapture.frametime()` returns). |
@@ -198,6 +199,10 @@ They're compiled for both Linux x86 and x64 servers (the one exception is `gm.ph
 - `gm.phys.minlist_replace` - replaces `IVP_U_Min_List::add` with a corrected copy of the stock algorithm.
 - `gm.phys.minlist_skip_list` - disables the physics min-list skip-list (long-jump) optimization outright.
 - `gm.phys.ctrl_remove_absent` - stops a crash when a constraint is removed from a physics object that has already been torn down.
+- `gm.phys.vhash_remove_null` - `IVP_VHash::remove_elem` returns early on an absent key instead of raising the not-found fatal.
+- `gm.phys.coc_absent_bail` - `ctrl_remove_absent` controller removal returns when the controller is absent from the sim unit's list instead of reading before the list array.
+- `gm.phys.friction_hash_init_size` - creates the per-core friction hash with 16 initial slots instead of 2, cutting rehash+re-add churn as contacts accumulate. (x86)
+- `gm.phys.vhash_store_remove_bound` - bounds `IVP_VHash_Store::remove_elem`: its find loop has no null-slot break, so an absent key walks off the array. (x86, opt-in)
 
 Every fix is tied to the exact game code it repairs.\
 If a Garry's Mod update changes that code, the fix simply doesn't apply, the plugin never writes over code it doesn't recognize, so a fix that's no longer valid can't cause new problems.\

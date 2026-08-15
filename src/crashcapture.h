@@ -54,6 +54,7 @@ namespace CrashCapture {
         int phys_hook_ms;     // CRASHCAPTURE_PHYS_HOOK_MS
         int report_debounce_sec; // CRASHCAPTURE_REPORT_DEBOUNCE
         int phys_resolve_delay; // CRASHCAPTURE_PHYS_RESOLVE_DELAY
+        int phys_defer_eps_us; // CRASHCAPTURE_PHYS_DEFER_EPS_US (0 = off)
         bool firstchance;     // CRASHCAPTURE_FIRSTCHANCE
         bool window_watchdog; // CRASHCAPTURE_WINDOW_WATCHDOG
         bool lua_heartbeat;   // CRASHCAPTURE_LUA_HEARTBEAT
@@ -206,7 +207,6 @@ namespace CrashCapture {
             void Uninstall();
             uint64_t LagEpisodes();
             uint64_t LastLagTickMs();
-            void RefreshToggles();
         }
     }
 
