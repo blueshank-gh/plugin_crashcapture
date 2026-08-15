@@ -1,0 +1,54 @@
+name: Crash / hang report
+description: Report a crash or freeze that Crash Capture reported.
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: type
+    attributes:
+      label: Type
+      description: What part of the plugin this relates to.
+      multiple: true
+      options:
+        - lua
+        - engine
+        - physics
+        - external
+        - internal
+        - binary
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS and architecture (linux x86, linux x64, windows x86, windows x64). Add the matching platform label if you can.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Crash Capture version
+      description: Plugin version and how it was loaded (require, source plugin, or sideload).
+    validations:
+      required: true
+  - type: textarea
+    id: reason
+    attributes:
+      label: Report reason
+      description: The one-line reason from the report header.
+    validations:
+      required: true
+  - type: textarea
+    id: patches
+    attributes:
+      label: Patches line
+      description: The patches line from the report header (e.g. `3 applied, 1 drifted`), if present.
+    validations:
+      required: false
+  - type: textarea
+    id: report
+    attributes:
+      label: Sanitized report
+      description: Paste the report, sanitized. Reports can contain private or sensitive server information; remove anything sensitive before posting.
+    validations:
+      required: false

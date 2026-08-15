@@ -1,0 +1,60 @@
+name: Bug report
+description: Report a bug in Crash Capture.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Describe the bug.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: false
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: Steps to trigger it, if known.
+    validations:
+      required: true
+  - type: dropdown
+    id: type
+    attributes:
+      label: Type
+      description: What part of the plugin this relates to.
+      multiple: true
+      options:
+        - lua
+        - engine
+        - physics
+        - external
+        - internal
+        - binary
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS and architecture (linux x86, linux x64, windows x86, windows x64).
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Crash Capture version
+      description: Plugin version and how it was loaded (require, source plugin, or sideload).
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Crash report
+      description: Relevant report content, sanitized. Do not paste raw captures that may contain private or sensitive server information.
+    validations:
+      required: false
