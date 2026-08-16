@@ -26,6 +26,12 @@
     #define CC_OS "linux"
 #endif
 
+#if defined(DEBUG) || defined(_DEBUG)
+    #define CC_CONFIG "debug"
+#else
+    #define CC_CONFIG "release"
+#endif
+
 // INTERFACE_PLUGIN -> server plugin (IGMODSERVERPLUGINCALLBACKS004), gets GameFrame.
 // INTERFACE_PRELOAD -> client preload (version.dll mimic / .so), crash-only.
 #ifdef INTERFACE_PLUGIN
@@ -244,6 +250,8 @@ namespace CrashCapture {
         void Banner(const char* kind, const char* reason, const char* reportPath); // console-only banner; NULL path = no "report :" line
         void Footer();
         void SetContext(const char* kind, const char* reason, uintptr_t fault);
+        void SetMapName(const char* name);
+        const char* MapName();
         const char* Kind();
         const char* Reason();
         uintptr_t Fault();

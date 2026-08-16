@@ -879,10 +879,35 @@ namespace CrashCapture {
 
     // --------- lua-heartbeat ---
 
-    static int cc_lua_pulse(lua_State*)
+    static ILuaInterface* IfaceForState(lua_State* L);
+
+    static void RefreshMapName(ILuaInterface* l)
+    {
+        namespace G = GarrysMod::Lua;
+        static uint64_t lastMs = 0;
+        uint64_t now = MonotonicMs();
+        if (Report::MapName() && now - lastMs < 1000) return;
+        lastMs = now;
+
+        l->PushSpecial(G::SPECIAL_GLOB);
+        l->GetField(-1, "game");
+        if (!l->IsType(-1, G::Type::Table)) { l->Pop(2); return; }
+        l->GetField(-1, "GetMap");
+        if (!l->IsType(-1, G::Type::Function)) { l->Pop(3); return; }
+        if (l->PCall(0, 1, 0) != 0) { l->Pop(3); return; }
+        if (l->IsType(-1, G::Type::String)) {
+            const char* s = l->GetString(-1);
+            if (s && *s) Report::SetMapName(s);
+        }
+        l->Pop(3);
+    }
+
+    static int cc_lua_pulse(lua_State* L)
     {
         CrashCapture::Pulse();
         if (!g_moduleLoad) Lua::EnsureApi();
+        ILuaInterface* l = IfaceForState(L);
+        if (l) RefreshMapName(l);
         return 0;
     }
 

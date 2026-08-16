@@ -269,7 +269,7 @@ namespace CrashCapture {
 
         LoadConfig();
         Log::OpenSession();
-        Log::Debug("Crash Capture - v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_SIDE " (" CC_BUILD ")\n");
+        Log::Debug("Crash Capture - v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_CONFIG "/" CC_SIDE " (" CC_BUILD ")\n");
         PruneOldReports();
 
         // client preloading can cause issues of loading into telemetry, this fixes that.
@@ -311,7 +311,7 @@ namespace CrashCapture {
         #endif
 
         #if defined(CC_SERVER)
-            Log::F("CrashCapture - v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_SIDE " - " __TIME__ " " __DATE__
+            Log::F("CrashCapture - v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_CONFIG "/" CC_SIDE " - " __TIME__ " " __DATE__
                 "\nreports -> %s\n", abdir);
         #endif
 
@@ -374,6 +374,7 @@ namespace CrashCapture {
     static char g_ctxKind[64] = {0};
     static char g_ctxReason[256] = {0};
     static uintptr_t g_ctxFault = 0;
+    static char g_mapName[128] = {0};
 
     void Report::SetContext(const char* kind, const char* reason, uintptr_t fault)
     {
@@ -381,6 +382,11 @@ namespace CrashCapture {
         snprintf(g_ctxReason, sizeof(g_ctxReason), "%s", reason ? reason : "");
         g_ctxFault = fault;
     }
+    void Report::SetMapName(const char* name)
+    {
+        snprintf(g_mapName, sizeof(g_mapName), "%s", name ? name : "");
+    }
+    const char* Report::MapName() { return g_mapName[0] ? g_mapName : NULL; }
     const char* Report::Kind() { return g_ctxKind; }
     const char* Report::Reason() { return g_ctxReason; }
     uintptr_t Report::Fault() { return g_ctxFault; }
@@ -428,7 +434,7 @@ namespace CrashCapture {
         Log::F("# Crash Capture\n\n");
         Log::F("- **type** : `%s`\n", kind);
         Log::F("- **reason** : `%s`\n", reason ? reason : "-");
-        Log::F("- **build** : v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_SIDE " (" __DATE__ " " __TIME__ ")\n");
+        Log::F("- **build** : v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_CONFIG "/" CC_SIDE " (" __DATE__ " " __TIME__ ")\n");
         Log::F("- **time** : %s UTC (epoch %lld)\n", stamp, (long long)time(NULL));
         Log::F("- **uptime** : %llu ms since init\n", (unsigned long long)(MonotonicMs() - g_startMs));
         #if defined(CC_WINDOWS)
@@ -440,6 +446,9 @@ namespace CrashCapture {
             Log::F("- **pulse** : last heartbeat %llu ms ago\n",
                 (unsigned long long)(MonotonicMs() - g_lastPulseMs));
         else Log::Str("- **pulse** : never (no heartbeat source in this configuration)\n");
+        if (Report::MapName())
+            Log::F("- **map** : `%s`\n", Report::MapName());
+        else Log::Str("- **map** : `unknown` (no map)\n");
         Patch::ReportHeader();
         Log::Flush();
 

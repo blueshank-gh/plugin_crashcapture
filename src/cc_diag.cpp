@@ -478,11 +478,14 @@ namespace CrashCapture {
         A.pushcclosure(L, diag_print, 0);
         A.setfield(L, LUA_GLOBALSINDEX, "print");
 
-        A.createtable(L, 0, 10);
+        A.createtable(L, 0, 11);
         A.pushstring(L, Report::Kind());
         A.setfield(L, -2, "kind");
         A.pushstring(L, Report::Reason());
         A.setfield(L, -2, "reason");
+        if (Report::MapName()) A.pushstring(L, Report::MapName());
+        else A.pushnil(L);
+        A.setfield(L, -2, "map");
         {
             uintptr_t f = Report::Fault();
             if (f) A.pushlightuserdata(L, (void*)f); else A.pushnil(L);

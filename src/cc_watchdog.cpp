@@ -80,7 +80,7 @@ namespace CrashCapture {
                         else snprintf(abdir, sizeof(abdir), "%s", Cfg().dir);
                     }
                 #endif
-                Log::F("[Crash Capture] v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_SIDE " - " __TIME__ " " __DATE__
+                Log::F("[Crash Capture] v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_CONFIG "/" CC_SIDE " - " __TIME__ " " __DATE__
                     "\nreports -> %s\n", abdir);
             #endif
 

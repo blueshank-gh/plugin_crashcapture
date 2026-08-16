@@ -350,6 +350,10 @@ An `address` argument also accepts a plain number. Reads that fail return `nil`.
 - `crash.reason: string`\
     The one-line summary (same text as the report's **reason**).
 
+- `crash.map: string`\
+    The current map name (e.g. `gm_construct`).\
+    `nil` if no map was known when the plugin captured it (no heartbeat source or still loading).
+
 - `crash.fault: address`\
     The faulting data address (e.g. the bad pointer in an access violation).\
     `nil` for freezes and faults with no address.
