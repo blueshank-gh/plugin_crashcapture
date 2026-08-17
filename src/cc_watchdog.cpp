@@ -188,6 +188,8 @@ namespace CrashCapture {
     {
         uint64_t pulse = g_lastPulseMs;
 
+        if (now <= pulse) return;
+
         // fresh pulse since we last fired re-arms the watchdog
         if (pulse != g_firedAtPulse) {
             NoteRecovery(now);
