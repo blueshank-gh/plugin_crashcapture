@@ -26,6 +26,8 @@ namespace CrashCapture {
             void Reset();
             void NoteHookLag(uintptr_t mindist);
             int* EventLoopMode();
+            bool MindistObjectsLive(void* mindist);
+            bool MindistObjectsNaN(void* mindist);
         }
     }
 }

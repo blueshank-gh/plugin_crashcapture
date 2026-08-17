@@ -8,6 +8,8 @@
 #include "tools/cc_hooking.h"
 #include "tools/cc_signature.h"
 #include "features/cc_physrecover.h"
+#include "features/cc_physpatch.h"
+#include <string.h>
 #include <time.h>
 #include <stdint.h>
 
@@ -121,16 +123,21 @@ namespace CrashCapture {
         o_ue(mindist, a2, a3);
     }
 
-    // do_impact / simulate_time_event: per-event checkpoints, the originals always run.
     static void h_di(void* mindist)
     {
         BudgetCheck(mindist);
+        if (Cfg().patches && !Phys::Recover::MindistObjectsLive(mindist)) {
+            Log::Debug("[CC-PATCH] do_impact skipped: mindist 0x%lx references a stale object\n",
+                       (unsigned long)(uintptr_t)mindist);
+            return;
+        }
         o_di(mindist);
     }
     static void h_stev(void* mindist, void* env)
     {
         BudgetCheck(mindist);
         o_stev(mindist, env);
+        Phys::Patch::DeferEpsilonRefire(mindist, env);
     }
 
     bool Phys::Bind::Install()

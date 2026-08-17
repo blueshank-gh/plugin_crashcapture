@@ -205,17 +205,31 @@ namespace CrashCapture::Log {
     static size_t g_conQueueLen = 0;
     #if defined(CC_WINDOWS)
         static volatile LONG g_qLock = 0;
-        static void QLock() { while (InterlockedExchange(&g_qLock, 1)) Sleep(0); }
+        static bool QLockTry() {
+            uint64_t start = MonotonicMs();
+            for (;;) {
+                if (!InterlockedExchange(&g_qLock, 1)) return true;
+                if (MonotonicMs() - start >= 2) return false; // holder may be suspended...
+                Sleep(0);
+            }
+        }
         static void QUnlock() { InterlockedExchange(&g_qLock, 0); }
     #else
         static volatile int g_qLock = 0;
-        static void QLock() { while (__sync_lock_test_and_set(&g_qLock, 1)) usleep(0); }
+        static bool QLockTry() {
+            uint64_t start = MonotonicMs();
+            for (;;) {
+                if (!__sync_lock_test_and_set(&g_qLock, 1)) return true;
+                if (MonotonicMs() - start >= 2) return false;
+                usleep(0);
+            }
+        }
         static void QUnlock() { __sync_lock_release(&g_qLock); }
     #endif
 
     static void QueueAppend(const char* s, size_t len)
     {
-        QLock();
+        if (!QLockTry()) return; // drop the line rather than deadlock on a suspended holder
         if (g_conQueueLen + len <= sizeof(g_conQueue)) {
             memcpy(g_conQueue + g_conQueueLen, s, len);
             g_conQueueLen += len;
@@ -229,7 +243,7 @@ namespace CrashCapture::Log {
         if (!EngineSinkReady() || !g_conQueueLen) return;
 
         char local[sizeof(g_conQueue)];
-        QLock();
+        if (!QLockTry()) return;
         size_t n = g_conQueueLen;
         memcpy(local, g_conQueue, n);
         g_conQueueLen = 0;
@@ -356,11 +370,8 @@ namespace CrashCapture::Log {
 
     void Flush()
     {
-    #if defined(CC_WINDOWS)
-        if (g_file != INVALID_HANDLE_VALUE) FlushFileBuffers(g_file);
-    #else
-        if (g_file >= 0) fsync(g_file);
-    #endif
+        // write()/WriteFile already handed the data to the OS.
+        // differed to later on if needed for buffered...
     }
 
     // 16 bytes/line "base+off  hex  ascii".
@@ -420,7 +431,7 @@ namespace CrashCapture::Log {
                                     CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
             if (g_session == INVALID_HANDLE_VALUE) return false;
         #else
-            g_session = open(path, O_TRUNC | O_WRONLY | O_CREAT, 0666);
+            g_session = open(path, O_TRUNC | O_WRONLY | O_CREAT, 0600);
             if (g_session < 0) return false;
         #endif
         return true;
@@ -464,10 +475,10 @@ namespace CrashCapture::Log {
             }
             return g_file != INVALID_HANDLE_VALUE;
         #else
-            g_file = open(g_path, O_TRUNC | O_WRONLY | O_CREAT, 0666);
+            g_file = open(g_path, O_TRUNC | O_WRONLY | O_CREAT, 0600);
             if (g_file < 0) {
                 snprintf(g_path, sizeof(g_path), "crashcapture_%s_%s_%u.md", stamp, kind, pid);
-                g_file = open(g_path, O_TRUNC | O_WRONLY | O_CREAT, 0666);
+                g_file = open(g_path, O_TRUNC | O_WRONLY | O_CREAT, 0600);
             }
             return g_file >= 0;
         #endif
@@ -475,14 +486,15 @@ namespace CrashCapture::Log {
 
     void Close()
     {
-        Flush();
         #if defined(CC_WINDOWS)
             if (g_file != INVALID_HANDLE_VALUE) {
+                FlushFileBuffers(g_file);
                 CloseHandle(g_file);
                 g_file = INVALID_HANDLE_VALUE;
             }
         #else
             if (g_file >= 0) {
+                fsync(g_file);
                 close(g_file);
                 g_file = -1;
             }

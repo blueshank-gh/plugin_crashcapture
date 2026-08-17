@@ -7,6 +7,7 @@
 #include "features/cc_profile.h"
 #include "tools/cc_hooking.h"
 #include "tools/cc_signature.h"
+#include "tools/cc_patch.h"
 
 #include "glua/LuaShared.h"
 #include "glua/LuaInterface.h"
@@ -23,6 +24,7 @@
 #else
     #include <dlfcn.h>
     #include <fcntl.h>
+    #include <pthread.h>
     #include <unistd.h>
 #endif
 
@@ -719,6 +721,23 @@ namespace CrashCapture {
         g_recLoopbreak = g_recPhysresume = g_recRecovery = 0;
 
         RecoveryInfo info = g_recInfo;
+        #if defined(CC_LINUX)
+            {
+                // the SIGUSR1/SIGUSR2 and fatal handlers write g_recInfo, block them for the copy.
+                sigset_t set, old;
+                sigemptyset(&set);
+                sigaddset(&set, SIGUSR1);
+                sigaddset(&set, SIGUSR2);
+                sigaddset(&set, SIGSEGV);
+                sigaddset(&set, SIGBUS);
+                sigaddset(&set, SIGILL);
+                sigaddset(&set, SIGFPE);
+                sigaddset(&set, SIGABRT);
+                pthread_sigmask(SIG_BLOCK, &set, &old);
+                info = g_recInfo;
+                pthread_sigmask(SIG_SETMASK, &old, NULL);
+            }
+        #endif
         Lua::RefreshStates();
         int fired = 0;
         for (int r = 0; r < 3; ++r) {
@@ -860,10 +879,35 @@ namespace CrashCapture {
 
     // --------- lua-heartbeat ---
 
-    static int cc_lua_pulse(lua_State*)
+    static ILuaInterface* IfaceForState(lua_State* L);
+
+    static void RefreshMapName(ILuaInterface* l)
+    {
+        namespace G = GarrysMod::Lua;
+        static uint64_t lastMs = 0;
+        uint64_t now = MonotonicMs();
+        if (Report::MapName() && now - lastMs < 1000) return;
+        lastMs = now;
+
+        l->PushSpecial(G::SPECIAL_GLOB);
+        l->GetField(-1, "game");
+        if (!l->IsType(-1, G::Type::Table)) { l->Pop(2); return; }
+        l->GetField(-1, "GetMap");
+        if (!l->IsType(-1, G::Type::Function)) { l->Pop(3); return; }
+        if (l->PCall(0, 1, 0) != 0) { l->Pop(3); return; }
+        if (l->IsType(-1, G::Type::String)) {
+            const char* s = l->GetString(-1);
+            if (s && *s) Report::SetMapName(s);
+        }
+        l->Pop(3);
+    }
+
+    static int cc_lua_pulse(lua_State* L)
     {
         CrashCapture::Pulse();
         if (!g_moduleLoad) Lua::EnsureApi();
+        ILuaInterface* l = IfaceForState(L);
+        if (l) RefreshMapName(l);
         return 0;
     }
 
@@ -918,12 +962,13 @@ namespace CrashCapture {
         Config& c = Cfg();
         int n = 0;
         t[n++] = {"timeout", CK_INT, &c.timeout_sec, 0, false};
-        t[n++] = {"hang_kill", CK_INT, &c.hang_kill_sec, 0, false};
+        t[n++] = {"hang_kill", CK_INT, &c.hang_kill_sec, 0, true};
         t[n++] = {"max_age_days", CK_INT, &c.max_age_days, 0, false};
         t[n++] = {"loopbreak", CK_BOOL, &c.loopbreak, 0, false};
         t[n++] = {"phys_resume", CK_BOOL, &c.phys_resume, 0, false};
         t[n++] = {"phys_recover", CK_BOOL, &c.phys_recover, 0, false};
         t[n++] = {"phys_resolve_delay", CK_INT, &c.phys_resolve_delay, 0, false};
+        t[n++] = {"phys_defer_eps_us", CK_INT, &c.phys_defer_eps_us, 0, false};
         t[n++] = {"phys_pin", CK_BOOL, &c.phys_pin, 0, false};
         t[n++] = {"phys_hook", CK_BOOL, &c.phys_hook, 0, true};
         t[n++] = {"phys_hook_ms", CK_INT, &c.phys_hook_ms, 0, false};
@@ -962,8 +1007,7 @@ namespace CrashCapture {
         if (disable) {
             Shutdown();
         } else {
-            InstallHandlers();
-            if (Cfg().timeout_sec > 0) Watchdog::Start(false);
+            Init(); // full re-arm: reload config, handlers, watchdog
         }
     }
 
@@ -1071,6 +1115,14 @@ namespace CrashCapture {
 
     static int cc_lua_dump(lua_State* L)
     {
+        uint64_t now = MonotonicMs();
+        int deb = Cfg().report_debounce_sec;
+        static uint64_t lastDumpMs = 0;
+        if (deb > 0 && lastDumpMs && (now - lastDumpMs) < (uint64_t)deb * 1000ull) {
+            Log::Str("[Crash Capture] dump: suppressed (debounced).\n");
+            return 0;
+        }
+        lastDumpMs = now;
         Platform::DumpThread("dump", "manual dump requested (LUA)");
         return 0;
     }
@@ -1150,7 +1202,7 @@ namespace CrashCapture {
         uintptr_t a = ArgAddr(L, 1);
         int maxlen = g_api.type(L, 2) == CC_LT_NUM ? (int)g_api.tonumber(L, 2) : 256;
         if (maxlen < 0 || maxlen > 4096) maxlen = 4096;
-        static char buf[4096];
+        char buf[4096];
         int n = 0;
         for (; n < maxlen; ++n) {
             if (!Mem::IsReadable((void*)(a + n), 1)) break;
@@ -1171,7 +1223,7 @@ namespace CrashCapture {
         int want = g_api.type(L, 2) == CC_LT_NUM ? (int)g_api.tonumber(L, 2) : 64;
         if (want < 0) want = 0;
         if (want > 4096) want = 4096;
-        static char buf[4096];
+        char buf[4096];
         int n = 0;
         for (; n < want; ++n) {
             if (!Mem::IsReadable((void*)(a + n), 1)) break;
@@ -1522,6 +1574,55 @@ namespace CrashCapture {
         return 0;
     }
 
+    // --------- lua-patches ---
+
+    static int cc_lua_patches(lua_State* L)
+    {
+        ILuaInterface* l = IfaceForState(L);
+        if (!l) { if (g_api.push_ok) { g_api.pushnil(L); return 1; } return 0; }
+
+        l->CreateTable();
+        int n = Patch::Count();
+        for (int i = 0; i < n; ++i) {
+            CCPatchInfo info;
+            if (!Patch::GetInfo(i, &info)) continue;
+            l->PushNumber((double)(i + 1));
+            l->CreateTable();
+            l->PushString(info.id); l->SetField(-2, "id");
+            l->PushString(PatchStateName(info.state)); l->SetField(-2, "state");
+            l->PushBool(info.enabled); l->SetField(-2, "enabled");
+            if (info.addr) {
+                char at[32];
+                snprintf(at, sizeof(at), "0x%llx", (unsigned long long)info.addr);
+                l->PushString(at); l->SetField(-2, "address");
+            }
+            if (info.upstream && info.upstream[0]) {
+                l->PushString(info.upstream); l->SetField(-2, "upstream");
+            }
+            l->SetTable(-3);
+        }
+        return 1;
+    }
+
+    static int cc_lua_patch(lua_State* L)
+    {
+        if (!g_api.ok || !g_api.push_ok) return 0;
+        if (g_api.gettop(L) < 1 || g_api.type(L, 1) != CC_LT_STR) return 0;
+        const char* id = g_api.tolstring(L, 1, NULL);
+        if (!id) return 0;
+
+        bool on = true;
+        if (g_api.gettop(L) >= 2 && g_api.type(L, 2) != CC_LT_NIL)
+            on = g_api.toboolean(L, 2) != 0;
+
+        bool persisted = false;
+        CCPatchToggle r = Patch::Queue(id, on, &persisted);
+        g_api.pushboolean(L, (r == CC_TOGGLE_QUEUED || r == CC_TOGGLE_RESTART) ? 1 : 0);
+        g_api.pushstring(L, PatchToggleName(r));
+        g_api.pushboolean(L, persisted ? 1 : 0);
+        return 3;
+    }
+
     // --------- lua-bootstrap (sideload) ---
     typedef int (*Fn_lua_pcall)(lua_State*, int, int, int);
     static Fn_lua_pcall o_lua_pcall = 0;
@@ -1531,9 +1632,10 @@ namespace CrashCapture {
     {
         void* t = g_pcallTarget;
         g_pcallTarget = 0;
+        int r = o_lua_pcall(L, nargs, nresults, errfunc);
         if (t) CrashCapture::Hook::Uninstall(t);
         Lua::EnsureApi();
-        return o_lua_pcall(L, nargs, nresults, errfunc);
+        return r;
     }
 
     bool Lua::InstallSideloadBootstrap()
@@ -1579,6 +1681,8 @@ namespace CrashCapture {
             L->PushCFunction(cc_lua_frametime); L->SetField(-2, "frametime");
             L->PushCFunction(cc_lua_profile); L->SetField(-2, "profile");
             L->PushCFunction(cc_lua_profile_reset); L->SetField(-2, "profile_reset");
+            L->PushCFunction(cc_lua_patches); L->SetField(-2, "patches");
+            L->PushCFunction(cc_lua_patch); L->SetField(-2, "patch");
             L->PushString(CC_VERSION); L->SetField(-2, "version");
             L->PushString(CC_BUILD); L->SetField(-2, "build");
             L->PushString(CC_OS); L->SetField(-2, "os");

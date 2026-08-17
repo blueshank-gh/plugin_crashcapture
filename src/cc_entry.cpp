@@ -91,7 +91,7 @@ public:
     void          Pause(void) override {}
     void          UnPause(void) override {}
     const char*   GetPluginDescription(void) override { return "plugin_crashcapture v" CC_VERSION; }
-    void          LevelInit(const char*) override { CrashCapture::Grace(60); }
+    void          LevelInit(const char* mapName) override { CrashCapture::Report::SetMapName(mapName); CrashCapture::Grace(60); }
     void          ServerActivate(edict_t*, int, int) override {}
     void          GameFrame(bool) override {
         CrashCapture::Pulse();

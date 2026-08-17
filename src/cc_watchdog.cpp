@@ -21,9 +21,9 @@
 #endif
 
 namespace CrashCapture {
-    volatile uint64_t g_lastPulseMs = 0;
-    volatile uint64_t g_graceUntilMs = 0;
-    volatile uint64_t g_graceAnchorPulse = 0;
+    std::atomic<uint64_t> g_lastPulseMs(0);
+    std::atomic<uint64_t> g_graceUntilMs(0);
+    std::atomic<uint64_t> g_graceAnchorPulse(0);
 
     static volatile bool g_running = false;
     static volatile bool g_stop = false;
@@ -58,6 +58,7 @@ namespace CrashCapture {
             // first pulse: remember which thread the heartbeat comes from...
             #if defined(CC_WINDOWS)
                 g_gameThreadId = GetCurrentThreadId();
+                if (g_gameThreadHandle) CloseHandle((HANDLE)g_gameThreadHandle); // the window watchdog may have bound one
                 DuplicateHandle(GetCurrentProcess(), GetCurrentThread(),
                                 GetCurrentProcess(), (HANDLE*)&g_gameThreadHandle,
                                 0, FALSE, DUPLICATE_SAME_ACCESS);
@@ -79,7 +80,7 @@ namespace CrashCapture {
                         else snprintf(abdir, sizeof(abdir), "%s", Cfg().dir);
                     }
                 #endif
-                Log::F("[Crash Capture] v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_SIDE " - " __TIME__ " " __DATE__
+                Log::F("[Crash Capture] v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_CONFIG "/" CC_SIDE " - " __TIME__ " " __DATE__
                     "\nreports -> %s\n", abdir);
             #endif
 
@@ -186,6 +187,8 @@ namespace CrashCapture {
     static void HeartbeatTick(int timeout, uint64_t now)
     {
         uint64_t pulse = g_lastPulseMs;
+
+        if (now <= pulse) return;
 
         // fresh pulse since we last fired re-arms the watchdog
         if (pulse != g_firedAtPulse) {
@@ -374,6 +377,15 @@ namespace CrashCapture {
     void Watchdog::Start(bool deferredArm)
     {
         if (g_running) return;
+        #if defined(CC_WINDOWS)
+            if (g_thread) {
+                WaitForSingleObject(g_thread, 8000);
+                CloseHandle(g_thread);
+                g_thread = NULL;
+            }
+        #else
+            if (g_threadValid) { pthread_join(g_thread, NULL); g_threadValid = false; }
+        #endif
         g_stop = false;
         g_running = true;
         g_deferredArm = deferredArm;

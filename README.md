@@ -67,6 +67,7 @@ The defaults are sensible, so you only need these if you want to change somethin
 | `CRASHCAPTURE_PHYS_RECOVER` | `1` | Linux only, after a physics stall, freeze the offending objects so the tick can finish instead of stalling again. |
 | `CRASHCAPTURE_PHYS_PIN` | `0` | Linux only, also pin the offending objects in place (motion disabled) rather than only reporting them. |
 | `CRASHCAPTURE_PHYS_RESOLVE_DELAY` | `3` | Linux only, frames to wait after a physics recovery before firing the `crashcapture.physresolve` hook, so physics has settled. |
+| `CRASHCAPTURE_PHYS_DEFER_EPS_US` | `0` | Linux only, defer retained-mindist events whose next refire lands within this many microseconds of the current drain position. Experimental. |
 | `CRASHCAPTURE_REPORT_DEBOUNCE` | `15` | Minimum seconds between repeat reports for the same recurring condition. `0` disables the debounce. |
 | `CRASHCAPTURE_ENGINE_ERROR` | `1` | Capture engine-side fatal errors (`Sys_Error` and friends) instead of letting them exit silently. |
 | `CRASHCAPTURE_FRAME_PROFILE` | `1` | Collect per-frame timing metrics (what `crashcapture.frametime()` returns). |
@@ -74,6 +75,7 @@ The defaults are sensible, so you only need these if you want to change somethin
 | `CRASHCAPTURE_PROFILE_WINDOW` | `300` | Seconds before the profiler retires the current window and starts a fresh one, so it can be left armed indefinitely, `0` never rotates. |
 | `CRASHCAPTURE_DEBUG` | `0` | Verbose internal tracing. Noisy, for troubleshooting the plugin itself. |
 | `CRASHCAPTURE_MEMAPI` | `0` | Expose the `mem.*` API to Lua. Unsafe, see the warning below. |
+| `CRASHCAPTURE_PATCHES` | `1` | Master switch for the compiled-in engine patches. |
 | `CRASHCAPTURE_WINDOW_WATCHDOG` | `1` | On Windows clients with no other heartbeat, detect a frozen game by watching its window. |
 | `CRASHCAPTURE_LUA_HEARTBEAT` | `1` | Use a lightweight in-game timer as the freeze heartbeat. |
 | `CRASHCAPTURE_MANUAL_DUMP` | `1` | Let an external process force a report on demand. |
@@ -97,7 +99,6 @@ Once a realm is up, a global `crashcapture` table is available:
 
 ```lua
 crashcapture.set("timeout", 30) -- seconds before a freeze is declared
-crashcapture.set("hang_kill", 15) -- force-close 15s after a freeze report
 crashcapture.set("loopbreak", false)
 print(crashcapture.get("timeout")) -- 30
 crashcapture.pulse() -- manual heartbeat
@@ -105,6 +106,9 @@ crashcapture.frametime() -- returns a table of timing metrics
 crashcapture.set("profile", true) -- start the Lua call profiler
 crashcapture.profile(10) -- top 10 hooks/timers by self time
 crashcapture.profile_reset() -- zero the counters, start a fresh window
+crashcapture.patches() -- list the compiled-in engine patches and their state
+crashcapture.patch("gm.phys.mindist_reschedule", false) -- disable one
+crashcapture.patch("gm.phys.mindist_reschedule") -- re-enable it
 ```
 
 > In plugin mode the Lua table appears a little after the realm comes up (it's
@@ -113,9 +117,10 @@ crashcapture.profile_reset() -- zero the counters, start a fresh window
 > `crashcapture.get("ready")` (see [Knowing when it's ready](#knowing-when-its-ready)).
 
 Keys mirror the settings above, lower-cased and without the `CRASHCAPTURE_`
-prefix: `timeout`, `hang_kill`, `max_age_days`, `loopbreak`, `phys_resume`, `phys_recover`, `phys_pin`, `phys_hook_ms`, `phys_resolve_delay`, `debug`, `engine_error`, `frame_profile`, `profile`, `profile_window`, `report_debounce`, `firstchance`, `window_watchdog`, `lua_heartbeat`, `manual_dump`, `symbols`, and `disable`.
+prefix: `timeout`, `max_age_days`, `loopbreak`, `phys_resume`, `phys_recover`, `phys_pin`, `phys_hook_ms`, `phys_resolve_delay`, `debug`, `engine_error`, `frame_profile`, `profile`, `profile_window`, `report_debounce`, `firstchance`, `window_watchdog`, `lua_heartbeat`, `manual_dump`, `symbols`, and `disable`.
 
-`dir`, `script`, `memapi` and `phys_hook` are launch-config only: `get` reads them, `set` is refused (they're decided before Lua exists, and `memapi` would be a way to grant itself the unsafe `mem.*` API).\
+`dir`, `script`, `memapi`, `phys_hook` and `hang_kill` are launch-config only: `get` reads them, `set` is refused (they're decided before Lua exists, and `memapi` would be a way to grant itself the unsafe `mem.*` API).\
+`hang_kill` force-terminates the process, so it stays operator-controlled.\
 `console` is not exposed to Lua at all.
 
 There's also a Linux-only diagnostic for the physics-resume feature:
@@ -177,6 +182,49 @@ calls in flight right now), `buckets` / `bucket_max`, and `dropped`.
   - It tells you which hook is expensive, not whose code.
 - `timer.Simple` callbacks on Windows are named by the closure (`lua:...`) rather than as `timer.simple:...`
   - Because MSVC inlines the callback runner into the simple-timer drain and removes the hook point that supplies the timer's creation site.
+
+## Engine patches
+
+Garry's Mod has a few known bugs in its physics code that can crash or freeze the server.
+The plugin ships with small fixes for these and applies them automatically when it loads, so there's nothing to set up.
+
+They're compiled for both Linux x86 and x64 servers (the one exception is `gm.phys.watcher_stale_mindist`, which is x86-only because its x64 prologue can't be safely detoured):
+
+- `gm.phys.contact_stale_core` - stops a crash when physics objects are destroyed while still in use.
+- `gm.phys.mindist_null_edge` - stops a crash when a physics contact record points at removed geometry or a NaN-position object.
+- `gm.phys.watcher_stale_mindist` - stops a crash when a physics record is removed twice. (x86 only)
+- `gm.phys.ovtree_hash_remove` - stops a crash when an object is removed from a physics list twice.
+- `gm.phys.oo_collision_hash_index` / `gm.phys.oo_collision_hash_swap` - stop a crash from a lookup bug in the collision system.
+- `gm.phys.minlist_walk_bound_a` / `gm.phys.minlist_walk_bound_b` - stop a freeze where physics scheduling gets stuck in a loop.
+- `gm.phys.minlist_replace` - replaces `IVP_U_Min_List::add` with a corrected copy of the stock algorithm.
+- `gm.phys.minlist_skip_list` - disables the physics min-list skip-list (long-jump) optimization outright.
+- `gm.phys.ctrl_remove_absent` - stops a crash when a constraint is removed from a physics object that has already been torn down.
+- `gm.phys.vhash_remove_null` - `IVP_VHash::remove_elem` returns early on an absent key instead of raising the not-found fatal.
+- `gm.phys.coc_absent_bail` - `ctrl_remove_absent` controller removal returns when the controller is absent from the sim unit's list instead of reading before the list array.
+- `gm.phys.friction_hash_init_size` - creates the per-core friction hash with 16 initial slots instead of 2, cutting rehash+re-add churn as contacts accumulate. (x86)
+- `gm.phys.vhash_store_remove_bound` - bounds `IVP_VHash_Store::remove_elem`: its find loop has no null-slot break, so an absent key walks off the array. (x86, opt-in)
+
+Every fix is tied to the exact game code it repairs.\
+If a Garry's Mod update changes that code, the fix simply doesn't apply, the plugin never writes over code it doesn't recognize, so a fix that's no longer valid can't cause new problems.\
+When that happens you'll get a notice in the console, and every crash report shows how many fixes were applied versus skipped, so you always know what's actually running.
+
+You can check and control the fixes from Lua:
+
+```lua
+crashcapture.patches() -- list every fix and its state
+crashcapture.patch("gm.phys.contact_stale_core", false) -- turn one off
+crashcapture.patch("gm.phys.contact_stale_core") -- turn it back on
+```
+
+Your choice is saved to `crashes/patches.txt` and remembered on the next start.\
+`CRASHCAPTURE_PATCHES=0` turns every fix off, regardless of the file.\
+These fixes only exist in server builds, never the client.
+
+`crashcapture.patch()` returns three values:
+
+- `ok` - whether the change was accepted.
+- `status` - what happens next: `"queued"` takes effect shortly, `"restart"` applies on the next server start (most fixes, because rewriting code while it's running is unsafe), `"unknown"` is an invalid id, and `"blocked"` means patches are turned off.
+- `saved` - whether your choice was written to disk. `false` means it only lasts this session, usually because the reports folder isn't writable.
 
 ## Knowing when it's ready
 
@@ -301,6 +349,10 @@ An `address` argument also accepts a plain number. Reads that fail return `nil`.
 
 - `crash.reason: string`\
     The one-line summary (same text as the report's **reason**).
+
+- `crash.map: string`\
+    The current map name (e.g. `gm_construct`).\
+    `nil` if no map was known when the plugin captured it (no heartbeat source or still loading).
 
 - `crash.fault: address`\
     The faulting data address (e.g. the bad pointer in an access violation).\

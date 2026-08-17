@@ -3,6 +3,7 @@
 #include "crashcapture.h"
 #include "features/cc_physrecover.h"
 #include "features/cc_profile.h"
+#include "tools/cc_patch.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -155,6 +156,8 @@ namespace CrashCapture {
         if (c.report_debounce_sec < 0) c.report_debounce_sec = 0;
         c.phys_resolve_delay = EnvInt("CRASHCAPTURE_PHYS_RESOLVE_DELAY", 3);
         if (c.phys_resolve_delay < 0) c.phys_resolve_delay = 0;
+        c.phys_defer_eps_us = EnvInt("CRASHCAPTURE_PHYS_DEFER_EPS_US", 0);
+        if (c.phys_defer_eps_us < 0) c.phys_defer_eps_us = 0;
 
         // First-chance VEH off on the client: the D3D/ShaderAPI bring-up uses SEH as control flow and intercepting it can break startup.
         #ifdef INTERFACE_PLUGIN
@@ -174,6 +177,7 @@ namespace CrashCapture {
         c.profile_window = EnvInt("CRASHCAPTURE_PROFILE_WINDOW", 300);
         if (c.profile_window < 0) c.profile_window = 0;
         c.memapi = EnvInt("CRASHCAPTURE_MEMAPI", 0) != 0;
+        c.patches = EnvInt("CRASHCAPTURE_PATCHES", 1) != 0;
 
         // store crashes in <gmod-root>/crashes
         const char* dir = CfgRaw("CRASHCAPTURE_DIR");
@@ -265,7 +269,7 @@ namespace CrashCapture {
 
         LoadConfig();
         Log::OpenSession();
-        Log::Debug("Crash Capture - v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_SIDE " (" CC_BUILD ")\n");
+        Log::Debug("Crash Capture - v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_CONFIG "/" CC_SIDE " (" CC_BUILD ")\n");
         PruneOldReports();
 
         // client preloading can cause issues of loading into telemetry, this fixes that.
@@ -307,7 +311,7 @@ namespace CrashCapture {
         #endif
 
         #if defined(CC_SERVER)
-            Log::F("CrashCapture - v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_SIDE " - " __TIME__ " " __DATE__
+            Log::F("CrashCapture - v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_CONFIG "/" CC_SIDE " - " __TIME__ " " __DATE__
                 "\nreports -> %s\n", abdir);
         #endif
 
@@ -328,6 +332,7 @@ namespace CrashCapture {
 
     void Pulse()
     {
+        if (!g_initialized) return;
         static bool first = true;
         if (first) { first = false; Log::Debug("[Crash Capture] first pulse\n"); }
         Watchdog::Pulse();
@@ -338,6 +343,7 @@ namespace CrashCapture {
         Profile::Poll();
         Lua::PollRecovery();
         Lua::PollReady();
+        Patch::DrainQueue();
     }
 
     const char* StallClassName(int cls)
@@ -355,7 +361,7 @@ namespace CrashCapture {
     {
         uint64_t until = MonotonicMs() + (uint64_t)seconds * 1000ull;
         if (until > g_graceUntilMs) g_graceUntilMs = until;
-        g_graceAnchorPulse = g_lastPulseMs;
+        g_graceAnchorPulse = g_lastPulseMs.load();
     }
 
     void DumpNow(const char* reason)
@@ -368,6 +374,7 @@ namespace CrashCapture {
     static char g_ctxKind[64] = {0};
     static char g_ctxReason[256] = {0};
     static uintptr_t g_ctxFault = 0;
+    static char g_mapName[128] = {0};
 
     void Report::SetContext(const char* kind, const char* reason, uintptr_t fault)
     {
@@ -375,6 +382,11 @@ namespace CrashCapture {
         snprintf(g_ctxReason, sizeof(g_ctxReason), "%s", reason ? reason : "");
         g_ctxFault = fault;
     }
+    void Report::SetMapName(const char* name)
+    {
+        snprintf(g_mapName, sizeof(g_mapName), "%s", name ? name : "");
+    }
+    const char* Report::MapName() { return g_mapName[0] ? g_mapName : NULL; }
     const char* Report::Kind() { return g_ctxKind; }
     const char* Report::Reason() { return g_ctxReason; }
     uintptr_t Report::Fault() { return g_ctxFault; }
@@ -422,7 +434,7 @@ namespace CrashCapture {
         Log::F("# Crash Capture\n\n");
         Log::F("- **type** : `%s`\n", kind);
         Log::F("- **reason** : `%s`\n", reason ? reason : "-");
-        Log::F("- **build** : v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_SIDE " (" __DATE__ " " __TIME__ ")\n");
+        Log::F("- **build** : v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_CONFIG "/" CC_SIDE " (" __DATE__ " " __TIME__ ")\n");
         Log::F("- **time** : %s UTC (epoch %lld)\n", stamp, (long long)time(NULL));
         Log::F("- **uptime** : %llu ms since init\n", (unsigned long long)(MonotonicMs() - g_startMs));
         #if defined(CC_WINDOWS)
@@ -434,6 +446,10 @@ namespace CrashCapture {
             Log::F("- **pulse** : last heartbeat %llu ms ago\n",
                 (unsigned long long)(MonotonicMs() - g_lastPulseMs));
         else Log::Str("- **pulse** : never (no heartbeat source in this configuration)\n");
+        if (Report::MapName())
+            Log::F("- **map** : `%s`\n", Report::MapName());
+        else Log::Str("- **map** : `unknown` (no map)\n");
+        Patch::ReportHeader();
         Log::Flush();
 
         Report::Banner(kind, reason, Log::Path());

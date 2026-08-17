@@ -254,6 +254,22 @@ namespace CrashCapture {
         }
     #endif
 
+    bool Mem::Protect(void* addr, size_t len, bool writable, bool exec)
+    {
+        #if defined(CC_WINDOWS)
+            DWORD want = exec ? (writable ? PAGE_EXECUTE_READWRITE : PAGE_EXECUTE_READ)
+                : (writable ? PAGE_READWRITE : PAGE_READONLY);
+            DWORD old;
+            return VirtualProtect(addr, len, want, &old) != 0;
+        #else
+            long ps = sysconf(_SC_PAGESIZE);
+            uintptr_t page = (uintptr_t)addr & ~(uintptr_t)(ps - 1);
+            size_t span = ((uintptr_t)addr + len) - page;
+            int prot = PROT_READ | (writable ? PROT_WRITE : 0) | (exec ? PROT_EXEC : 0);
+            return mprotect((void*)page, span, prot) == 0;
+        #endif
+    }
+
     bool Modules::HasLua()
     {
         Modules::Refresh();

@@ -32,6 +32,7 @@ namespace CrashCapture {
         unsigned char orig[32];
         int len; // bytes of prologue we saved/patched (0 == slot free)
         unsigned char* tramp;
+        int tlen;
     };
     static const int kMaxHooks = 64;
     static HookRec g_hooks[kMaxHooks];
@@ -51,7 +52,8 @@ namespace CrashCapture {
                 b == 0x2E || b == 0x36 || b == 0x3E || b == 0x26 || b == 0x64 || b == 0x65) { ++i; continue; }
             break;
         }
-        if (kX64 && p[i] >= 0x40 && p[i] <= 0x4F) ++i; // REX prefix
+        bool rexW = false;
+        if (kX64 && p[i] >= 0x40 && p[i] <= 0x4F) { rexW = (p[i] & 0x08) != 0; ++i; } // REX prefix
 
         unsigned char op = p[i++];
 
@@ -60,6 +62,7 @@ namespace CrashCapture {
         if (op == 0x90 || op == 0xC9 || op == 0xC3) return i; // nop / leave / ret
         if (op == 0x68) return i + (opsize ? 2 : 4); // push imm
         if (op == 0x6A) return i + 1; // push imm8
+        if (op >= 0xB8 && op <= 0xBF) return i + (rexW ? 8 : (opsize ? 2 : 4)); // mov r64/32/16, imm
         if (op == 0xE9 || (op == 0xE8 && !kPcThunkRisk)) { // __x86.get_pc_thunk.bx
             if (relDisp) *relDisp = i;
             return i + 4;
@@ -115,20 +118,6 @@ namespace CrashCapture {
         return i + imm;
     }
 
-    static bool Protect(void* addr, size_t len, bool writable)
-    {
-    #if defined(CC_WINDOWS)
-        DWORD old;
-        return VirtualProtect(addr, len, writable ? PAGE_EXECUTE_READWRITE : PAGE_EXECUTE_READ, &old) != 0;
-    #else
-        long ps = sysconf(_SC_PAGESIZE);
-        uintptr_t page = (uintptr_t)addr & ~(uintptr_t)(ps - 1);
-        size_t span = ((uintptr_t)addr + len) - page;
-        int prot = writable ? (PROT_READ | PROT_WRITE | PROT_EXEC) : (PROT_READ | PROT_EXEC);
-        return mprotect((void*)page, span, prot) == 0;
-    #endif
-    }
-
     // allocate executable trampoline memory.
     // on x64 we try to place it near `nearTo` so any relocated RIP-relative disp32 stays in range.
     static unsigned char* AllocTramp(size_t len, void* nearTo)
@@ -160,6 +149,16 @@ namespace CrashCapture {
             if (p == MAP_FAILED)
                 p = mmap(NULL, len, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
             return p == MAP_FAILED ? NULL : (unsigned char*)p;
+        #endif
+    }
+
+    static void FreeTramp(unsigned char* t, int len)
+    {
+        if (!t) return;
+        #if defined(CC_WINDOWS)
+            VirtualFree(t, 0, MEM_RELEASE);
+        #else
+            munmap(t, (size_t)len);
         #endif
     }
 
@@ -202,6 +201,7 @@ namespace CrashCapture {
 
         unsigned char* tramp = AllocTramp((size_t)total + kJmpLen, target);
         if (!tramp) return false;
+        const int tlen = total + kJmpLen;
 
         memcpy(tramp, t, (size_t)total); // relocated prologue
         #if defined(CC_X64)
@@ -210,14 +210,14 @@ namespace CrashCapture {
                 int off = ripOff[i];
                 int64_t delta = (int64_t)((uintptr_t)t - (uintptr_t)tramp);
                 int64_t nd = (int64_t)(*(int32_t*)(tramp + off)) + delta;
-                if (nd < INT32_MIN || nd > INT32_MAX) return false; // trampoline too far -> bail
+                if (nd < INT32_MIN || nd > INT32_MAX) { FreeTramp(tramp, tlen); return false; }
                 *(int32_t*)(tramp + off) = (int32_t)nd;
             }
             for (int i = 0; i < nRel; ++i) {
                 int off = relOff[i];
                 int64_t delta = (int64_t)((uintptr_t)t - (uintptr_t)tramp);
                 int64_t nd = (int64_t)(*(int32_t*)(tramp + off)) + delta;
-                if (nd < INT32_MIN || nd > INT32_MAX) return false;
+                if (nd < INT32_MIN || nd > INT32_MAX) { FreeTramp(tramp, tlen); return false; }
                 *(int32_t*)(tramp + off) = (int32_t)nd;
             }
         #else
@@ -230,14 +230,21 @@ namespace CrashCapture {
         #endif
         WriteJmp(tramp + total, t + total); // jump back to target+total
 
-        if (!Protect(t, (size_t)total, true)) return false; // trampoline leaks here.
+        if (!Mem::Protect(t, (size_t)total, true, true)) { FreeTramp(tramp, tlen); return false; }
         HookRec* h = &g_hooks[slot];
-        h->target = t; h->len = total; h->tramp = tramp;
+        h->target = t; h->len = total; h->tramp = tramp; h->tlen = tlen;
         memcpy(h->orig, t, (size_t)total);
 
         WriteJmp(t, detour);
         for (int i = kJmpLen; i < total; ++i) t[i] = 0x90; // NOP-pad the tail of the last insn
-        Protect(t, (size_t)total, false);
+        Mem::Protect(t, (size_t)total, false, true);
+
+        #if defined(CC_WINDOWS)
+            DWORD oldp = 0;
+            VirtualProtect(tramp, (SIZE_T)tlen, PAGE_EXECUTE_READ, &oldp);
+        #else
+            mprotect(tramp, (size_t)tlen, PROT_READ | PROT_EXEC);
+        #endif
 
         if (slot == g_nHooks) ++g_nHooks;
         if (trampoline) *trampoline = tramp;
@@ -247,10 +254,11 @@ namespace CrashCapture {
     static void RestoreRec(HookRec* h)
     {
         if (!h->len) return;
-        if (Protect(h->target, (size_t)h->len, true)) {
+        if (Mem::Protect(h->target, (size_t)h->len, true, true)) {
             memcpy(h->target, h->orig, (size_t)h->len);
-            Protect(h->target, (size_t)h->len, false);
+            Mem::Protect(h->target, (size_t)h->len, false, true);
         }
+        if (h->tramp) { FreeTramp(h->tramp, h->tlen); h->tramp = NULL; }
         h->len = 0;
     }
 

@@ -4,6 +4,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <atomic>
 
 #if defined(_WIN32)
     #define CC_WINDOWS 1
@@ -25,6 +26,12 @@
     #define CC_OS "linux"
 #endif
 
+#if defined(DEBUG) || defined(_DEBUG)
+    #define CC_CONFIG "debug"
+#else
+    #define CC_CONFIG "release"
+#endif
+
 // INTERFACE_PLUGIN -> server plugin (IGMODSERVERPLUGINCALLBACKS004), gets GameFrame.
 // INTERFACE_PRELOAD -> client preload (version.dll mimic / .so), crash-only.
 #ifdef INTERFACE_PLUGIN
@@ -35,7 +42,7 @@
     #define CC_SIDE "client"
 #endif
 
-#define CC_VERSION "1.3.0"
+#define CC_VERSION "1.4.0"
 #define CC_BUILD __DATE__ " " __TIME__
 
 namespace CrashCapture {
@@ -53,6 +60,7 @@ namespace CrashCapture {
         int phys_hook_ms;     // CRASHCAPTURE_PHYS_HOOK_MS
         int report_debounce_sec; // CRASHCAPTURE_REPORT_DEBOUNCE
         int phys_resolve_delay; // CRASHCAPTURE_PHYS_RESOLVE_DELAY
+        int phys_defer_eps_us; // CRASHCAPTURE_PHYS_DEFER_EPS_US (0 = off)
         bool firstchance;     // CRASHCAPTURE_FIRSTCHANCE
         bool window_watchdog; // CRASHCAPTURE_WINDOW_WATCHDOG
         bool lua_heartbeat;   // CRASHCAPTURE_LUA_HEARTBEAT
@@ -64,6 +72,7 @@ namespace CrashCapture {
         bool profile;         // CRASHCAPTURE_PROFILE
         int profile_window;   // CRASHCAPTURE_PROFILE_WINDOW
         bool memapi;          // CRASHCAPTURE_MEMAPI
+        bool patches;         // CRASHCAPTURE_PATCHES
         char dir[512];        // CRASHCAPTURE_DIR
         char script[512];     // CRASHCAPTURE_SCRIPT
     };
@@ -140,6 +149,7 @@ namespace CrashCapture {
     namespace Mem {
         bool IsReadable(const void* p, size_t n);
         bool IsExecutable(uintptr_t addr);
+        bool Protect(void* addr, size_t len, bool writable, bool exec);
     }
     namespace Sym {
         void Init();
@@ -240,6 +250,8 @@ namespace CrashCapture {
         void Banner(const char* kind, const char* reason, const char* reportPath); // console-only banner; NULL path = no "report :" line
         void Footer();
         void SetContext(const char* kind, const char* reason, uintptr_t fault);
+        void SetMapName(const char* name);
+        const char* MapName();
         const char* Kind();
         const char* Reason();
         uintptr_t Fault();
@@ -253,9 +265,9 @@ namespace CrashCapture {
         void Stop();
         void Pulse();
     }
-    extern volatile uint64_t g_lastPulseMs;
-    extern volatile uint64_t g_graceUntilMs;
-    extern volatile uint64_t g_graceAnchorPulse;
+    extern std::atomic<uint64_t> g_lastPulseMs;
+    extern std::atomic<uint64_t> g_graceUntilMs;
+    extern std::atomic<uint64_t> g_graceAnchorPulse;
 
     #if defined(CC_WINDOWS)
         extern void* g_gameThreadHandle;
