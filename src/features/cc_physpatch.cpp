@@ -132,6 +132,33 @@ namespace CrashCapture {
         return 1; // converged, the retained mindist is stale
     }
 
+    // --- gm.phys.friction_stale_mindist (PATCH_DETOUR) ---
+    typedef void* (*Fn_ttgmf)(void*, void**, int*, void*, int);
+    static Fn_ttgmf o_ttgmf = 0;
+
+    static void* h_ttgmf(void* mindist, void** a2, int* a3, void* a4, int a5)
+    {
+        if (mindist) {
+            if (!Phys::Recover::MindistObjectsLive(mindist)) {
+                Log::Debug("[CC-PATCH] try_to_generate_managed_friction skipped: retained mindist 0x%lx "
+                           "references a stale object\n",
+                           (unsigned long)(uintptr_t)mindist);
+                if (a2) *a2 = NULL;
+                if (a3) *a3 = 0;
+                return NULL;
+            }
+            if (Phys::Recover::MindistObjectsNaN(mindist)) {
+                Log::Debug("[CC-PATCH] try_to_generate_managed_friction skipped: retained mindist 0x%lx "
+                           "references a NaN-position object\n",
+                           (unsigned long)(uintptr_t)mindist);
+                if (a2) *a2 = NULL;
+                if (a3) *a3 = 0;
+                return NULL;
+            }
+        }
+        return o_ttgmf(mindist, a2, a3, a4, a5);
+    }
+
     // --- gm.phys.ovtree_hash_remove (PATCH_DETOUR) ---
     struct VHashArgs { void* hash; const void* elem; unsigned idx; bool present; };
     static void VHashFindInner(void* arg)
@@ -509,6 +536,24 @@ namespace CrashCapture {
                 true, false, false,
             },
             {
+                "gm.phys.friction_stale_mindist",
+                "gmod IVP retained-mindist UAF",
+                "skip try_to_generate_managed_friction when the retained mindist references a stale or NaN-position object",
+                CC_PATCH_DETOUR,
+                {"patch.ttgmf", "vphysics",
+                    "_ZN11IVP_Mindist32try_to_generate_managed_frictionEPP19IVP_Friction_SystemP8IVP_BOOLP19IVP_Simulation_UnitS3_",
+                    "55 89 E5 57 56 53 83 EC 4C 8B 7D 08 0F B6 47 15 89 C2 83 E0 03 83 E2 03",
+                    {{CC_STEP_END, 0, 0}}},
+                0,
+                {0x55,0x89,0xE5,0x57,0x56,0x53,0x83,0xEC,0x4C,0x8B,0x7D,0x08,0x0F,0xB6,0x47,0x15,0x89,0xC2,0x83,0xE0,0x03,0x83,0xE2,0x03},
+                {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+                {0},
+                24,
+                (void*)h_ttgmf,
+                (void**)&o_ttgmf,
+                true, false, false,
+            },
+            {
                 "gm.phys.oo_collision_hash_index",
                 "gmod IVP OO-watcher collision-hash sign-extension",
                 "read the 16-bit collision-hash slot with movzx, not movsx (an index >= 0x8000 went negative)",
@@ -761,6 +806,23 @@ namespace CrashCapture {
                 24,
                 (void*)h_ff,
                 (void**)&o_ff,
+                true, false, false,
+            },
+            {
+                "gm.phys.friction_stale_mindist",
+                "gmod IVP retained-mindist UAF",
+                "skip try_to_generate_managed_friction when the retained mindist references a stale or NaN-position object",
+                CC_PATCH_DETOUR,
+                {"patch.ttgmf", "vphysics", NULL,
+                    "55 48 89 E5 41 57 41 56 41 55 41 54 53 48 89 FB 48 83 EC 78 48 89 55 90",
+                    {{CC_STEP_END, 0, 0}}},
+                0,
+                {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x89,0xFB,0x48,0x83,0xEC,0x78,0x48,0x89,0x55,0x90},
+                {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+                {0},
+                24,
+                (void*)h_ttgmf,
+                (void**)&o_ttgmf,
                 true, false, false,
             },
             {

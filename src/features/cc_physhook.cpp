@@ -126,10 +126,17 @@ namespace CrashCapture {
     static void h_di(void* mindist)
     {
         BudgetCheck(mindist);
-        if (Cfg().patches && !Phys::Recover::MindistObjectsLive(mindist)) {
-            Log::Debug("[CC-PATCH] do_impact skipped: mindist 0x%lx references a stale object\n",
-                       (unsigned long)(uintptr_t)mindist);
-            return;
+        if (Cfg().patches) {
+            if (!Phys::Recover::MindistObjectsLive(mindist)) {
+                Log::Debug("[CC-PATCH] do_impact skipped: mindist 0x%lx references a stale object\n",
+                           (unsigned long)(uintptr_t)mindist);
+                return;
+            }
+            if (Phys::Recover::MindistObjectsNaN(mindist)) {
+                Log::Debug("[CC-PATCH] do_impact skipped: mindist 0x%lx references a NaN-position object\n",
+                           (unsigned long)(uintptr_t)mindist);
+                return;
+            }
         }
         o_di(mindist);
     }
