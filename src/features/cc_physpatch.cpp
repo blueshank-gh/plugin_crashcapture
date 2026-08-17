@@ -90,6 +90,14 @@ namespace CrashCapture {
     // --- gm.phys.mindist_null_edge (PATCH_DETOUR) ---
     static int h_pk(void* mms, void* e1, void* e2, void* cA, void* cB)
     {
+        if (mms && Mem::IsReadable(mms, sizeof(void*))) {
+            void* mindist = *(void**)mms;
+            if (mindist && Phys::Recover::MindistObjectsNaN(mindist)) {
+                Log::Debug("[CC-PATCH] p_minimize_PK skipped: mindist 0x%lx object position is NaN\n",
+                        (unsigned long)(uintptr_t)mindist);
+                return 1; // converged, the object exploded to NaN
+            }
+        }
         if (e1 && e2)
             return o_pk(mms, e1, e2, cA, cB);
         Log::Debug("[CC-PATCH] p_minimize_PK skipped: null edge (mindist 0x%lx)\n",
@@ -110,6 +118,11 @@ namespace CrashCapture {
                            "references a stale object\n",
                            (unsigned long)(uintptr_t)mindist);
                 return 1; // converged, the retained mindist is stale
+            }
+            if (mindist && Phys::Recover::MindistObjectsNaN(mindist)) {
+                Log::Debug("[CC-PATCH] p_minimize_FF skipped: mindist 0x%lx object position is NaN\n",
+                           (unsigned long)(uintptr_t)mindist);
+                return 1; // converged, the object exploded to NaN
             }
         }
         if (e1 && e2)
@@ -462,7 +475,7 @@ namespace CrashCapture {
             {
                 "gm.phys.mindist_null_edge",
                 "gmod IVP retained-mindist UAF",
-                "skip p_minimize_PK when handed a null edge (stale hull geometry)",
+                "skip p_minimize_PK when handed a null edge or a NaN-position object",
                 CC_PATCH_DETOUR,
                 {"patch.p_minimize_pk", "vphysics",
                     "_ZN27IVP_Mindist_Minimize_Solver13p_minimize_PKEPK16IVP_Compact_EdgeS2_P21IVP_Cache_Ledge_PointS4_",
@@ -480,7 +493,7 @@ namespace CrashCapture {
             {
                 "gm.phys.mindist_stale_ff",
                 "gmod IVP retained-mindist UAF",
-                "skip p_minimize_FF when the retained mindist references a stale object",
+                "skip p_minimize_FF when the retained mindist references a stale object or a NaN-position object",
                 CC_PATCH_DETOUR,
                 {"patch.p_minimize_ff", "vphysics",
                     "_ZN27IVP_Mindist_Minimize_Solver13p_minimize_FFEPK16IVP_Compact_EdgeS2_P21IVP_Cache_Ledge_PointS4_",
@@ -719,7 +732,7 @@ namespace CrashCapture {
             {
                 "gm.phys.mindist_null_edge",
                 "gmod IVP retained-mindist UAF",
-                "skip p_minimize_PK when handed a null edge (stale hull geometry)",
+                "skip p_minimize_PK when handed a null edge or a NaN-position object",
                 CC_PATCH_DETOUR,
                 {"patch.p_minimize_pk", "vphysics", NULL,
                     "55 48 89 E5 41 57 49 89 CF 41 56 49 89 F6 4C 89 FE 41 55 4C 8D 6D C0 41 54 4C 89 E9 49 89 D4 53 4C 89 C2 4C 89 C3 48 83",
@@ -736,7 +749,7 @@ namespace CrashCapture {
             {
                 "gm.phys.mindist_stale_ff",
                 "gmod IVP retained-mindist UAF",
-                "skip p_minimize_FF when the retained mindist references a stale object",
+                "skip p_minimize_FF when the retained mindist references a stale object or a NaN-position object",
                 CC_PATCH_DETOUR,
                 {"patch.p_minimize_ff", "vphysics", NULL,
                     "55 48 89 E5 41 57 4D 89 C7 41 56 41 BE 03 00 00 00 41 55 41 54 49 89 F4 53 48 81 EC 78 03 00 00",

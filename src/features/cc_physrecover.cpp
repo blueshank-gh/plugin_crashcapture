@@ -9,6 +9,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 #include <ucontext.h>
 #include <unwind.h>
 #include <signal.h>
@@ -49,6 +50,7 @@ namespace CrashCapture {
     static const unsigned char kCoreStatic = 0x02; // IVP_Core flags: already immovable
     static const unsigned char kCorePinned = 0x10; // IVP_Core flags: pinned (motion off)
     static const uint32_t kEntEntryMask    = 0xFFF; // Source ENT_ENTRY_MASK (confirm at test)
+    static const int kCorePos = 0xC0; // IVP_Core -> position (x86: 3 doubles, x64: 3 floats)
 
     // --------- cc_signature targets ---
     // phase-1 physics pause byte and phase-2 CPhysicsObject vptr
@@ -366,6 +368,44 @@ namespace CrashCapture {
         la.live = false;
         RunProtectedQuiet(LiveCheckInner, &la);
         return la.live;
+    }
+
+    static bool IvpObjPosNan(uintptr_t ivp)
+    {
+        if (!PtrOk(ivp)) return false;
+        uintptr_t coreSlot = ivp + kIvpCore;
+        if (!Mem::IsReadable((void*)coreSlot, sizeof(void*))) return false;
+        uintptr_t core = *(uintptr_t*)coreSlot;
+        if (!PtrOk(core) || !Mem::IsReadable((void*)(core + kCorePos), 24)) return false;
+        #if defined(CC_X86)
+            double x = *(double*)(core + kCorePos);
+            double y = *(double*)(core + kCorePos + 8);
+            double z = *(double*)(core + kCorePos + 16);
+        #else
+            double x = (double)*(float*)(core + kCorePos);
+            double y = (double)*(float*)(core + kCorePos + 4);
+            double z = (double)*(float*)(core + kCorePos + 8);
+        #endif
+        return isnan(x) || isnan(y) || isnan(z);
+    }
+
+    struct NanCheckArgs { uintptr_t m; bool nan; };
+    static void NanCheckInner(void* arg)
+    {
+        NanCheckArgs* na = (NanCheckArgs*)arg;
+        uintptr_t obj0 = *(uintptr_t*)(na->m + kMindistObj0);
+        uintptr_t obj1 = *(uintptr_t*)(na->m + kMindistObj1);
+        na->nan = IvpObjPosNan(obj0) || IvpObjPosNan(obj1);
+    }
+
+    bool Phys::Recover::MindistObjectsNaN(void* mindist)
+    {
+        if (!mindist) return false;
+        NanCheckArgs na;
+        na.m = (uintptr_t)mindist;
+        na.nan = false;
+        RunProtectedQuiet(NanCheckInner, &na);
+        return na.nan;
     }
 
     static bool Known(uintptr_t obj)

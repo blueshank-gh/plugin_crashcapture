@@ -191,7 +191,7 @@ The plugin ships with small fixes for these and applies them automatically when 
 They're compiled for both Linux x86 and x64 servers (the one exception is `gm.phys.watcher_stale_mindist`, which is x86-only because its x64 prologue can't be safely detoured):
 
 - `gm.phys.contact_stale_core` - stops a crash when physics objects are destroyed while still in use.
-- `gm.phys.mindist_null_edge` - stops a crash when a physics contact record points at removed geometry.
+- `gm.phys.mindist_null_edge` - stops a crash when a physics contact record points at removed geometry or a NaN-position object.
 - `gm.phys.watcher_stale_mindist` - stops a crash when a physics record is removed twice. (x86 only)
 - `gm.phys.ovtree_hash_remove` - stops a crash when an object is removed from a physics list twice.
 - `gm.phys.oo_collision_hash_index` / `gm.phys.oo_collision_hash_swap` - stop a crash from a lookup bug in the collision system.
