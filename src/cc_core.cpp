@@ -123,11 +123,118 @@ namespace CrashCapture {
         return NULL;
     }
 
-    static const char* CfgRaw(const char* name)
+    static const int kCfgFileMax = 64;
+    struct CfgFileEntry { char key[40]; char value[512]; };
+    static CfgFileEntry s_cfgFile[kCfgFileMax];
+    static int s_cfgFileCount = 0;
+    static char s_cfgFilePath[1100] = {0};
+
+    static void CfgKeyNorm(const char* in, char* out, size_t outsz)
+    {
+        size_t n = 0;
+        for (const char* p = in; *p && n + 1 < outsz; ++p) {
+            char ch = *p;
+            if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+            out[n++] = ch;
+        }
+        out[n] = 0;
+        static const char kPrefix[] = "crashcapture_";
+        const size_t plen = sizeof(kPrefix) - 1;
+        if (n > plen && strncmp(out, kPrefix, plen) == 0)
+            memmove(out, out + plen, n - plen + 1);
+    }
+
+    static const char* CfgFileLookup(const char* name)
+    {
+        char key[40];
+        CfgKeyNorm(name, key, sizeof(key));
+        for (int i = 0; i < s_cfgFileCount; ++i)
+            if (strcmp(s_cfgFile[i].key, key) == 0)
+                return s_cfgFile[i].value;
+        return NULL;
+    }
+
+    static void LoadConfigFile()
+    {
+        s_cfgFileCount = 0;
+        s_cfgFilePath[0] = 0;
+
+        const char* dir = CfgRaw("CRASHCAPTURE_DIR");
+        if (!dir || !*dir) dir = "crashes";
+        snprintf(s_cfgFilePath, sizeof(s_cfgFilePath), "%s/crashcapture.cfg", dir);
+
+        #if defined(CC_WINDOWS)
+            CreateDirectoryA(dir, NULL);
+        #else
+            mkdir(dir, 0777);
+        #endif
+
+        FILE* f = fopen(s_cfgFilePath, "r");
+        if (!f) return;
+
+        char line[1024];
+        bool firstLine = true;
+        while (fgets(line, sizeof(line), f)) {
+            char* p = line;
+            if (firstLine) {
+                firstLine = false;
+                if ((unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF)
+                    p += 3;
+            }
+            while (*p == ' ' || *p == '\t') ++p;
+            if (*p == 0 || *p == '\n' || *p == '\r' || *p == '#' ||
+                (p[0] == '/' && p[1] == '/')) continue;
+
+            char* eq = strchr(p, '=');
+            if (!eq) continue;
+            *eq = 0;
+
+            char* k = p;
+            size_t klen = strlen(k);
+            while (klen > 0 && (k[klen - 1] == ' ' || k[klen - 1] == '\t')) k[--klen] = 0;
+            if (!*k) continue;
+
+            char* v = eq + 1;
+            while (*v == ' ' || *v == '\t') ++v;
+            size_t vlen = strlen(v);
+            while (vlen > 0 && (v[vlen - 1] == '\n' || v[vlen - 1] == '\r' || v[vlen - 1] == ' ' || v[vlen - 1] == '\t')) v[--vlen] = 0;
+            if (vlen == 0) continue;
+
+            for (char* q = v; *q; ++q) {
+                if (q != v && (q[-1] == ' ' || q[-1] == '\t') &&
+                    (*q == '#' || (q[0] == '/' && q[1] == '/'))) {
+                    *q = 0;
+                    break;
+                }
+            }
+            vlen = strlen(v);
+            while (vlen > 0 && (v[vlen - 1] == ' ' || v[vlen - 1] == '\t')) v[--vlen] = 0;
+            if (vlen == 0) continue;
+
+            char key[40];
+            CfgKeyNorm(k, key, sizeof(key));
+            if (!*key) continue;
+
+            int idx = -1;
+            for (int i = 0; i < s_cfgFileCount; ++i)
+                if (strcmp(s_cfgFile[i].key, key) == 0) { idx = i; break; }
+            if (idx < 0) {
+                if (s_cfgFileCount >= kCfgFileMax) continue;
+                idx = s_cfgFileCount++;
+                snprintf(s_cfgFile[idx].key, sizeof(s_cfgFile[idx].key), "%s", key);
+            }
+            snprintf(s_cfgFile[idx].value, sizeof(s_cfgFile[idx].value), "%s", v);
+        }
+        fclose(f);
+    }
+
+    const char* CfgRaw(const char* name)
     {
         const char* v = getenv(name);
         if (v && *v) return v;
-        return CmdlineLookup(name);
+        v = CmdlineLookup(name);
+        if (v && *v) return v;
+        return CfgFileLookup(name);
     }
 
     static int EnvInt(const char* name, int def)
@@ -154,6 +261,13 @@ namespace CrashCapture {
         if (c.phys_hook_ms < 20) c.phys_hook_ms = 20;
         c.report_debounce_sec = EnvInt("CRASHCAPTURE_REPORT_DEBOUNCE", 15);
         if (c.report_debounce_sec < 0) c.report_debounce_sec = 0;
+        c.hang_map = EnvInt("CRASHCAPTURE_HANG_MAP", 1) != 0;
+        c.hang_map_samples = EnvInt("CRASHCAPTURE_HANG_MAP_SAMPLES", 16);
+        if (c.hang_map_samples < 1) c.hang_map_samples = 1;
+        if (c.hang_map_samples > 64) c.hang_map_samples = 64;
+        c.hang_map_interval_ms = EnvInt("CRASHCAPTURE_HANG_MAP_INTERVAL_MS", 10);
+        if (c.hang_map_interval_ms < 1) c.hang_map_interval_ms = 1;
+        if (c.hang_map_interval_ms > 5000) c.hang_map_interval_ms = 5000;
         c.phys_resolve_delay = EnvInt("CRASHCAPTURE_PHYS_RESOLVE_DELAY", 3);
         if (c.phys_resolve_delay < 0) c.phys_resolve_delay = 0;
         c.phys_defer_eps_us = EnvInt("CRASHCAPTURE_PHYS_DEFER_EPS_US", 0);
@@ -259,6 +373,8 @@ namespace CrashCapture {
     {
         if (g_initialized) return;
 
+        LoadConfigFile();
+
         {
             const char* dis = CfgRaw("CRASHCAPTURE_DISABLE");
             if (dis && atoi(dis) != 0) { g_initialized = true; return; }
@@ -270,6 +386,8 @@ namespace CrashCapture {
         LoadConfig();
         Log::OpenSession();
         Log::Debug("Crash Capture - v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_CONFIG "/" CC_SIDE " (" CC_BUILD ")\n");
+        if (s_cfgFileCount > 0)
+            Log::Notice("Crash Capture - config file %s (%d key(s))\n", s_cfgFilePath, s_cfgFileCount);
         PruneOldReports();
 
         // client preloading can cause issues of loading into telemetry, this fixes that.
@@ -491,6 +609,20 @@ namespace CrashCapture {
         }
     }
 
+    struct LuaScan { void* ctx; int state; };
+    static void LuaScanFn(void* p)
+    {
+        LuaScan* s = (LuaScan*)p;
+
+        uintptr_t pcs[48];
+        int n = Platform::Backtrace(s->ctx, pcs, 48);
+        for (int i = 0; i < n; ++i) {
+            const CCModule* fm = Modules::Find(pcs[i]);
+            if (fm && strstr(fm->name, "lua_shared")) { s->state = 1; return; }
+            if ((!fm || strcmp(fm->name, "[anon-exec]") == 0) && Mem::IsExecutable(pcs[i])) { s->state = 2; return; }
+        }
+    }
+
     static void AppendInFlight(char* out, size_t outsz)
     {
         int d = Profile::Depth();
@@ -522,6 +654,18 @@ namespace CrashCapture {
             PhysScan ps = { ctx, m, false };
             RunProtectedQuiet(PhysScanFn, &ps);
             if (ps.hit) { snprintf(out, outsz, "physics (%s)", m->name); return STALL_PHYSICS; }
+            LuaScan ls = { ctx, 0 };
+            RunProtectedQuiet(LuaScanFn, &ls);
+            if (ls.state == 1) {
+                snprintf(out, outsz, "lua (interpreter) via %s", m->name);
+                AppendInFlight(out, outsz);
+                return STALL_LUA_INTERP;
+            }
+            if (ls.state == 2) {
+                snprintf(out, outsz, "lua (JIT trace / mcode) via %s", m->name);
+                AppendInFlight(out, outsz);
+                return STALL_LUA_JIT;
+            }
             snprintf(out, outsz, "native (%s)", m->name);
             return STALL_NATIVE;
         }

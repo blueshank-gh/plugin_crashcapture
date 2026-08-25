@@ -105,6 +105,10 @@ namespace CrashCapture {
                            (now - g_lastReportMs) >= (uint64_t)Cfg().report_debounce_sec * 1000ull;
         bool physResolved = false;
         bool handled = false;
+
+        if (writeReport && Cfg().hang_map && Cfg().hang_map_samples > 0)
+            Platform::HangMapBurst(Cfg().hang_map_samples, Cfg().hang_map_interval_ms);
+
         #if defined(CC_LINUX)
             Log::Debug("[CC-PHYS] hang fired: phys_recover=%d writeReport=%d (class pre-dump=%d)\n",
                         (int)Cfg().phys_recover, (int)writeReport, g_lastStallClass);

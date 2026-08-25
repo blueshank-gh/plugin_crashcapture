@@ -32,6 +32,7 @@ namespace CrashCapture {
             Engine::Uninstall();
             #if defined(CC_LINUX)
                 Phys::Bind::Uninstall();
+                Phys::Frame::Uninstall();
             #endif
         }
     }

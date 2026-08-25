@@ -42,7 +42,7 @@
     #define CC_SIDE "client"
 #endif
 
-#define CC_VERSION "1.4.1"
+#define CC_VERSION "1.5.0"
 #define CC_BUILD __DATE__ " " __TIME__
 
 namespace CrashCapture {
@@ -59,6 +59,9 @@ namespace CrashCapture {
         bool phys_hook;       // CRASHCAPTURE_PHYS_HOOK
         int phys_hook_ms;     // CRASHCAPTURE_PHYS_HOOK_MS
         int report_debounce_sec; // CRASHCAPTURE_REPORT_DEBOUNCE
+        bool hang_map;         // CRASHCAPTURE_HANG_MAP
+        int hang_map_samples;  // CRASHCAPTURE_HANG_MAP_SAMPLES
+        int hang_map_interval_ms; // CRASHCAPTURE_HANG_MAP_INTERVAL_MS
         int phys_resolve_delay; // CRASHCAPTURE_PHYS_RESOLVE_DELAY
         int phys_defer_eps_us; // CRASHCAPTURE_PHYS_DEFER_EPS_US (0 = off)
         bool firstchance;     // CRASHCAPTURE_FIRSTCHANCE
@@ -77,6 +80,7 @@ namespace CrashCapture {
         char script[512];     // CRASHCAPTURE_SCRIPT
     };
     Config& Cfg();
+    const char* CfgRaw(const char* name);
 
     // --------- cc-lifecycle ---
     void Init();
@@ -205,6 +209,14 @@ namespace CrashCapture {
         void NoteRecovered(const char* method, uint64_t downtimeMs, const char* stall, const char* reason, const char* report);
     }
 
+    // --------- cc-hangmap ---
+    namespace HangMap {
+        void Reset();
+        void Capture(uintptr_t pc, const uintptr_t* frames, int nframes);
+        int Count();
+        void Section(void* arg);
+    }
+
     // --------- cc-physhook (Linux: detour IVP to prevent physics hangs) ---
     namespace Phys {
         namespace Bind { // IVP detour install/remove (named Bind so it doesn't shadow tools Hook::)
@@ -234,6 +246,7 @@ namespace CrashCapture {
         int  EnumThreads(CCThread* out, int max);
         int  RequestLuaBreak();
         int  RequestPhysResolve(const char* kind, const char* reason, bool writeReport); // classify(+dump if writeReport)+resume-if-physics (1 resumed, 0 handled-no-resume, <0 failed)
+        int  HangMapBurst(int samples, int intervalMs); // sample the stuck game thread repeatedly
         int  SetPhysPaused(int paused);
         int  PhysPaused();
         void SuppressFurtherReports();

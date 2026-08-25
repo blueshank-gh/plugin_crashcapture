@@ -29,5 +29,19 @@ namespace CrashCapture {
             bool MindistObjectsLive(void* mindist);
             bool MindistObjectsNaN(void* mindist);
         }
+
+        namespace Frame {
+            struct Timing {
+                double ms;
+                double avg_ms;
+                uint64_t ticks;
+                uint64_t frame_ticks;
+            };
+            void Install();
+            void Uninstall();
+            void EndFrame();
+            bool Active();
+            bool Stats(Timing* out);
+        }
     }
 }

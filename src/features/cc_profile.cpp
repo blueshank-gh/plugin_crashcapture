@@ -189,9 +189,10 @@ namespace CrashCapture {
     static volatile int g_depth = 0;
     static int g_skipped = 0;
 
-    enum { PEND_NONE = 0, PEND_GAMEMODE, PEND_TIMER, PEND_NET };
+    enum { PEND_NONE = 0, PEND_GAMEMODE, PEND_TIMER, PEND_NET, PEND_CONCMD };
     static int g_pending = -1;
     static int g_pendKind = PEND_NONE;
+    static int g_gmPending[kMaxDepth];
 
     static inline void Enter(int bucket)
     {
@@ -621,11 +622,8 @@ namespace CrashCapture {
 
     static inline int CallBody(void* self, uintptr_t arg, Fn_call orig)
     {
-        if (!g_enabled) return orig(self, CC_EDXARG arg);
-        Enter(BucketForCallArg(arg));
-        int r = orig(self, CC_EDXARG arg);
-        Exit();
-        return r;
+        if (g_enabled) SetPending(BucketForCallArg(arg), PEND_GAMEMODE);
+        return orig(self, CC_EDXARG arg);
     }
 
     static inline char ArgsBody(void* self, uintptr_t arg, Fn_args orig)
@@ -640,44 +638,62 @@ namespace CrashCapture {
     static char CC_MEMBER h_args_a(void* self, CC_EDX uintptr_t arg) { return ArgsBody(self, arg, o_args_a); }
     static char CC_MEMBER h_args_b(void* self, CC_EDX uintptr_t arg) { return ArgsBody(self, arg, o_args_b); }
 
-    static inline int TakeGamemode()
+    static inline int GmScopeBegin(int bucket)
     {
-        int b = TakePending(PEND_GAMEMODE);
-        return b >= 0 ? b : g_unattributed;
+        int frame = g_depth;
+        Enter(-1);
+        if (g_depth > frame && bucket >= 0) g_gmPending[frame] = bucket;
+        return frame;
+    }
+
+    static inline void GmScopeEnd(int frame)
+    {
+        if (g_depth > frame) g_gmPending[frame] = -1;
+        Exit();
+    }
+
+    static inline int GmScopePick()
+    {
+        for (int i = g_depth - 1; i >= 0; --i)
+            if (g_gmPending[i] >= 0) return g_gmPending[i];
+        return -1;
     }
 
     static int CC_MEMBER h_finish(void* self, CC_EDX int nargs)
     {
         if (!g_enabled) return o_finish(self, CC_EDXARG nargs);
-        Enter(TakeGamemode());
+        int frame = GmScopeBegin(TakePending(PEND_GAMEMODE));
         int r = o_finish(self, CC_EDXARG nargs);
-        Exit();
+        GmScopeEnd(frame);
         return r;
     }
 
     static char CC_MEMBER h_finishbool(void* self, CC_EDX int nargs, char showErrors)
     {
         if (!g_enabled) return o_finishbool(self, CC_EDXARG nargs, showErrors);
-        Enter(TakeGamemode());
+        int frame = GmScopeBegin(TakePending(PEND_GAMEMODE));
         char r = o_finishbool(self, CC_EDXARG nargs, showErrors);
-        Exit();
+        GmScopeEnd(frame);
         return r;
     }
 
     static int CC_MEMBER h_returns(void* self, CC_EDX int nargs, int nrets)
     {
         if (!g_enabled) return o_returns(self, CC_EDXARG nargs, nrets);
-        Enter(TakeGamemode());
+        int frame = GmScopeBegin(TakePending(PEND_GAMEMODE));
         int r = o_returns(self, CC_EDXARG nargs, nrets);
-        Exit();
+        GmScopeEnd(frame);
         return r;
     }
 
     static char CC_MEMBER h_protected(void* self, CC_EDX int args, int rets, char showErrors)
     {
         if (!g_enabled) return o_protected(self, CC_EDXARG args, rets, showErrors);
-        int b = TakePending(PEND_TIMER);
+        int b = TakePending(PEND_CONCMD);
+        if (b < 0) b = TakePending(PEND_TIMER);
         if (b < 0) b = TakePending(PEND_NET);
+        if (b < 0) b = TakePending(PEND_GAMEMODE);
+        if (b < 0) b = GmScopePick();
         if (b < 0) b = BucketForLuaFunc(self, args);
         Enter(b);
         char r = o_protected(self, CC_EDXARG args, rets, showErrors);
@@ -702,6 +718,29 @@ namespace CrashCapture {
         }
 
         return o_timercb(ref, identifier, location);
+    }
+
+    // --------- profile-concommand ---
+
+    static void NoteConCommand(const void* cmd)
+    {
+        if (!cmd || !Mem::IsReadable(cmd, 1032 + sizeof(void*))) return;
+        const int argc = *(const int*)cmd;
+        const char* name = *(const char* const*)((const char*)cmd + 1032);
+        if (argc <= 0 || !name || !Mem::IsReadable(name, 1) || !*name) return;
+
+        char label[72];
+        snprintf(label, sizeof(label), "command:%s", name);
+        SetPending(BucketFor(HashStr(name), NULL, label, NULL, PROF_CONCMD), PEND_CONCMD);
+    }
+
+    typedef void (*Fn_concmd)(const void*);
+    static Fn_concmd o_concmd = 0;
+
+    static void h_concmd(const void* cmd)
+    {
+        if (g_enabled) NoteConCommand(cmd);
+        o_concmd(cmd);
     }
 
     #ifdef INTERFACE_PLUGIN
@@ -730,10 +769,26 @@ namespace CrashCapture {
         const char* module;
         const char* symbol;
         const char* literal;
+        const char* sig;
         void* detour;
         void** tramp;
         void* target;
     };
+
+    static const char* kConcmdSig =
+        #if defined(CC_LINUX) && defined(CC_X86)
+            "55 89 E5 57 56 53 83 EC 5C A1 ?? ?? ?? ?? 8B 75 ?? 85 C0";
+        #elif defined(CC_LINUX) && defined(CC_X64)
+            #ifdef INTERFACE_PLUGIN
+                "55 48 89 E5 41 57 41 56 49 89 FE 41 55 41 54 53 48 83 EC 78 4C 8B 25";
+            #else
+                "55 48 89 E5 41 57 41 56 41 55 49 89 FD 41 54 53 48 83 EC 78 48 8B 05";
+            #endif
+        #elif defined(CC_WINDOWS) && defined(CC_X86)
+            "55 8B EC 8B 0D ?? ?? ?? ?? 83 EC 3C 85 C9 0F 84 ?? ?? ?? ?? 8B 01 FF 90 ?? ?? ?? ?? 85 C0 0F 84 ?? ?? ?? ?? 56";
+        #else
+            "40 57 48 83 EC 70 48 8B F9 48 8B 0D ?? ?? ?? ?? 48 85 C9 0F 84 ?? ?? ?? ?? 48 8B 01 FF 90 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? ?? 48 89 9C 24 ?? ?? ?? ??";
+        #endif
 
     #ifdef INTERFACE_PLUGIN
         static const char* kGameModule = "server";
@@ -746,16 +801,17 @@ namespace CrashCapture {
     #endif
 
     static Anchor g_anchors[] = {
-        { NULL, "_ZN12CLuaGamemode4CallEPKc", "CLuaGamemode::Call", (void*)h_call_a, (void**)&o_call_a, 0 },
-        { NULL, "_ZN12CLuaGamemode4CallEi", "CLuaGamemode::Call", (void*)h_call_b, (void**)&o_call_b, 0 },
-        { NULL, "_ZN12CLuaGamemode12CallWithArgsEPKc","CLuaGamemode::CallWithArgs", (void*)h_args_a, (void**)&o_args_a, 0 },
-        { NULL, "_ZN12CLuaGamemode12CallWithArgsEi", "CLuaGamemode::CallWithArgs", (void*)h_args_b, (void**)&o_args_b, 0 },
-        { NULL, "_ZN12CLuaGamemode10CallFinishEi", "CLuaGamemode::CallFinish", (void*)h_finish, (void**)&o_finish, 0 },
-        { NULL, "_ZN12CLuaGamemode14CallFinishBoolEib","CLuaGamemode::CallFinishBool",(void*)h_finishbool, (void**)&o_finishbool, 0 },
-        { NULL, "_ZN12CLuaGamemode11CallReturnsEii",  "CLuaGamemode::CallReturns", (void*)h_returns, (void**)&o_returns, 0 },
-        { NULL, "_ZN9GarrysMod3Lua9Libraries5Timer17CallTimerFunctionEiRKSsS4_", "Timer Failed! [%s][%s]\n", (void*)h_timercb, (void**)&o_timercb, 0 },
-        { "lua_shared", "_ZN13CLuaInterface21CallFunctionProtectedEiib", "CLuaInterface::CallFunctionProtected", (void*)h_protected, (void**)&o_protected, 0 },
-        { NULL, CC_NET_SYMBOL, CC_NET_MARKER, (void*)h_netmsg, (void**)&o_netmsg, 0 },
+        { NULL, "_ZN12CLuaGamemode4CallEPKc", "CLuaGamemode::Call", NULL, (void*)h_call_a, (void**)&o_call_a, 0 },
+        { NULL, "_ZN12CLuaGamemode4CallEi", "CLuaGamemode::Call", NULL, (void*)h_call_b, (void**)&o_call_b, 0 },
+        { NULL, "_ZN12CLuaGamemode12CallWithArgsEPKc","CLuaGamemode::CallWithArgs", NULL, (void*)h_args_a, (void**)&o_args_a, 0 },
+        { NULL, "_ZN12CLuaGamemode12CallWithArgsEi", "CLuaGamemode::CallWithArgs", NULL, (void*)h_args_b, (void**)&o_args_b, 0 },
+        { NULL, "_ZN12CLuaGamemode10CallFinishEi", "CLuaGamemode::CallFinish", NULL, (void*)h_finish, (void**)&o_finish, 0 },
+        { NULL, "_ZN12CLuaGamemode14CallFinishBoolEib","CLuaGamemode::CallFinishBool",NULL, (void*)h_finishbool, (void**)&o_finishbool, 0 },
+        { NULL, "_ZN12CLuaGamemode11CallReturnsEii",  "CLuaGamemode::CallReturns", NULL, (void*)h_returns, (void**)&o_returns, 0 },
+        { NULL, "_ZN9GarrysMod3Lua9Libraries5Timer17CallTimerFunctionEiRKSsS4_", "Timer Failed! [%s][%s]\n", NULL, (void*)h_timercb, (void**)&o_timercb, 0 },
+        { "lua_shared", "_ZN13CLuaInterface21CallFunctionProtectedEiib", "CLuaInterface::CallFunctionProtected", NULL, (void*)h_protected, (void**)&o_protected, 0 },
+        { NULL, CC_NET_SYMBOL, CC_NET_MARKER, NULL, (void*)h_netmsg, (void**)&o_netmsg, 0 },
+        { NULL, "_Z13LuaConCommandRK8CCommand", "Warning: Player issued command but is now vanished (Command was \"%s\")\n", kConcmdSig, (void*)h_concmd, (void**)&o_concmd, 0 },
     };
     static const int kAnchorCount = (int)(sizeof(g_anchors) / sizeof(g_anchors[0]));
 
@@ -862,6 +918,7 @@ namespace CrashCapture {
                 if (a.target) continue;
             } else {
                 addr = Sig::Anchor(a.module, a.literal);
+                if (!addr && a.sig) addr = Sig::Scan(a.module ? a.module : kGameModule, a.sig);
             }
 
             for (int j = 0; addr && j < kAnchorCount; ++j)
@@ -933,6 +990,7 @@ namespace CrashCapture {
         g_skipped = 0;
         g_pending = -1;
         g_pendKind = PEND_NONE;
+        for (int i = 0; i < kMaxDepth; ++i) g_gmPending[i] = -1;
 
         memset(g_keys, 0, sizeof(g_keys));
         memset(g_fnCache, 0, sizeof(g_fnCache));
@@ -953,6 +1011,7 @@ namespace CrashCapture {
         g_skipped = 0;
         g_pending = -1;
         g_pendKind = PEND_NONE;
+        for (int i = 0; i < kMaxDepth; ++i) g_gmPending[i] = -1;
     }
 
     bool Profile::HasSamples()
@@ -1043,6 +1102,7 @@ namespace CrashCapture {
             case PROF_TIMER: return "timer";
             case PROF_LUA: return "lua";
             case PROF_NET: return "net";
+            case PROF_CONCMD: return "command";
             default: return "other";
         }
     }

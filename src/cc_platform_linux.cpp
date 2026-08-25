@@ -37,7 +37,7 @@ namespace CrashCapture {
     static volatile sig_atomic_t g_inReport = 0;
 
     // cross-thread handshake (SIGUSR2)
-    enum { CC_ACT_DUMP = 0, CC_ACT_LUABREAK = 1, CC_ACT_PHYSRESOLVE = 2 };
+    enum { CC_ACT_DUMP = 0, CC_ACT_LUABREAK = 1, CC_ACT_PHYSRESOLVE = 2, CC_ACT_PROBE = 3 };
     static const char* volatile g_pendKind = NULL;
     static const char* volatile g_pendReason = NULL;
     static volatile sig_atomic_t g_pendAction = CC_ACT_DUMP;
@@ -467,6 +467,8 @@ namespace CrashCapture {
         Report::Section("Registers", Sec_Registers, NULL, true);
         Report::Section("Native stack", Sec_Stack, NULL, true);
         Report::Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
+        if (HangMap::Count() > 0)
+            Report::Section("Hang map", HangMap::Section, NULL, true);
         Report::Section("Lua", Sec_Lua, NULL, false);
         Report::Section("Modules", Sec_Modules, NULL, false);
         if (Patch::Count() > 0)
@@ -538,6 +540,16 @@ namespace CrashCapture {
     // are, or arm the Lua loop-break hook so the write happens on the VM's own thread.
     static void DumpRequestHandler(int /*sig*/, siginfo_t* /*info*/, void* ucontext)
     {
+        if (g_pendAction == CC_ACT_PROBE) {
+            g_pendAction = CC_ACT_DUMP; // one-shot
+            if (!g_inReport) {
+                uintptr_t pcs[12];
+                int n = Platform::Backtrace(NULL, pcs, 12);
+                HangMap::Capture(Platform::ContextPC(ucontext), pcs, n);
+            }
+            g_dumpDone = 1;
+            return;
+        }
         Log::Panic();
         if (g_pendAction == CC_ACT_LUABREAK) {
             g_pendAction = CC_ACT_DUMP; // one-shot
@@ -658,6 +670,34 @@ namespace CrashCapture {
         }
         if (!g_dumpDone) { g_pendAction = CC_ACT_DUMP; return -1; }
         return (int)g_breakArmed; // 0 = no resume / non-physics, 1 = escaped
+    }
+
+    int Platform::HangMapBurst(int samples, int intervalMs)
+    {
+        int self = gettid_();
+        if (!g_gameThreadTid || g_gameThreadTid == self) return 0;
+        if (samples <= 0) return 0;
+
+        HangMap::Reset();
+        for (int i = 0; i < samples; ++i) {
+            g_dumpDone = 0;
+            g_pendAction = CC_ACT_PROBE;
+            if (syscall(SYS_tgkill, getpid(), g_gameThreadTid, SIGUSR2) != 0) {
+                g_pendAction = CC_ACT_DUMP;
+                break;
+            }
+            for (int j = 0; j < 100 && !g_dumpDone; ++j) {
+                struct timespec ts = { 0, 1000000 }; // 1ms
+                nanosleep(&ts, NULL);
+            }
+            if (!g_dumpDone) { g_pendAction = CC_ACT_DUMP; break; }
+            if (i + 1 < samples && intervalMs > 0) {
+                struct timespec ts = { intervalMs / 1000, (long)(intervalMs % 1000) * 1000000L };
+                nanosleep(&ts, NULL);
+            }
+        }
+        g_pendAction = CC_ACT_DUMP;
+        return HangMap::Count();
     }
 
     void Platform::DumpThread(const char* kind, const char* reason)

@@ -244,6 +244,8 @@ namespace CrashCapture {
         Report::Section("Registers",   Sec_Registers, NULL, true);
         Report::Section("Native stack", Sec_Stack,    NULL, true);
         Report::Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
+        if (HangMap::Count() > 0)
+            Report::Section("Hang map", HangMap::Section, NULL, true);
         Report::Section("Lua",         Sec_Lua,       NULL, false);
         Report::Section("Modules",     Sec_Modules,   NULL, false);
         if (Patch::Count() > 0)
@@ -426,6 +428,8 @@ namespace CrashCapture {
         Report::Section("Registers", Sec_Registers, NULL, true);
         Report::Section("Native stack", Sec_Stack, NULL, true);
         Report::Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
+        if (HangMap::Count() > 0)
+            Report::Section("Hang map", HangMap::Section, NULL, true);
         Report::Section("Lua", Sec_Lua, NULL, false);
         
         if (suspended) ResumeThread(th);
@@ -458,6 +462,34 @@ namespace CrashCapture {
         ResumeThread(th);
         return armed;
     }
+
+    int Platform::HangMapBurst(int samples, int intervalMs)
+    {
+        if (samples <= 0) return 0;
+        HANDLE th = (HANDLE)g_gameThreadHandle;
+        if (!th || g_gameThreadId == GetCurrentThreadId()) return 0;
+
+        HangMap::Reset();
+        for (int i = 0; i < samples; ++i) {
+            if (SuspendThread(th) == (DWORD)-1) break;
+            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
+            ctx.ContextFlags = CONTEXT_FULL;
+            if (GetThreadContext(th, &ctx)) {
+                #if defined(CC_X64)
+                    uintptr_t pc = (uintptr_t)ctx.Rip;
+                #else
+                    uintptr_t pc = (uintptr_t)ctx.Eip;
+                #endif
+                uintptr_t pcs[12];
+                int n = Platform::Backtrace(&ctx, pcs, 12);
+                HangMap::Capture(pc, pcs, n);
+            }
+            ResumeThread(th);
+            if (i + 1 < samples && intervalMs > 0) Sleep((DWORD)intervalMs);
+        }
+        return HangMap::Count();
+    }
+
     int Platform::SetPhysPaused(int) { return 0; }
     int Platform::PhysPaused() { return -1; }
 

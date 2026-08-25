@@ -52,8 +52,7 @@ For early crashes during game startup, we recommend source plugin for servers, a
 
 ## Settings
 
-It works out of the box, but you can tweak its behavior with these environment
-variables.\
+It works out of the box, but you can tweak its behavior with these environment variables, process arguments, or a [configuration file](#configuration-file).\
 The defaults are sensible, so you only need these if you want to change something.
 
 | Variable | Default | What it does |
@@ -69,8 +68,11 @@ The defaults are sensible, so you only need these if you want to change somethin
 | `CRASHCAPTURE_PHYS_RESOLVE_DELAY` | `3` | Linux only, frames to wait after a physics recovery before firing the `crashcapture.physresolve` hook, so physics has settled. |
 | `CRASHCAPTURE_PHYS_DEFER_EPS_US` | `0` | Linux only, defer retained-mindist events whose next refire lands within this many microseconds of the current drain position. Experimental. |
 | `CRASHCAPTURE_REPORT_DEBOUNCE` | `15` | Minimum seconds between repeat reports for the same recurring condition. `0` disables the debounce. |
+| `CRASHCAPTURE_HANG_MAP` | `1` | When a hang is detected, burst-probe the stuck thread a few times and include a `Hang map` report section showing the PC sites it kept landing on (see below). |
+| `CRASHCAPTURE_HANG_MAP_SAMPLES` | `16` | How many probes the hang map takes. Clamped to `1..64`. |
+| `CRASHCAPTURE_HANG_MAP_INTERVAL_MS` | `10` | Milliseconds between hang-map probes. Clamped to `1..5000`. |
 | `CRASHCAPTURE_ENGINE_ERROR` | `1` | Capture engine-side fatal errors (`Sys_Error` and friends) instead of letting them exit silently. |
-| `CRASHCAPTURE_FRAME_PROFILE` | `1` | Collect per-frame timing metrics (what `crashcapture.frametime()` returns). |
+| `CRASHCAPTURE_FRAME_PROFILE` | `1` | Collect per-frame timing metrics (what `crashcapture.frametime()` returns). On Linux this also times the server physics tick (`PhysFrame`). |
 | `CRASHCAPTURE_PROFILE` | `0` | Arm the Lua call profiler. |
 | `CRASHCAPTURE_PROFILE_WINDOW` | `300` | Seconds before the profiler retires the current window and starts a fresh one, so it can be left armed indefinitely, `0` never rotates. |
 | `CRASHCAPTURE_DEBUG` | `0` | Verbose internal tracing. Noisy, for troubleshooting the plugin itself. |
@@ -90,6 +92,32 @@ The defaults are sensible, so you only need these if you want to change somethin
 > [!WARNING]
 > We recommend not having CRASHCAPTURE_MEMAPI enabled, as this exposes the same API layer of mem.* from to one or multiple lua_State's\
 > Proceed with caution when this is enabled, as this is inherently unsafe.
+
+### Configuration file
+
+Hosts that cannot set environment variables or process arguments can drop a `crashcapture.cfg` into the crash folder instead.\
+Settings are resolved in this order:
+
+1. Environment variables, if set.
+2. Process arguments (`-CRASHCAPTURE_TIMEOUT 30`, and so on).
+3. `crashcapture.cfg` in the crash folder.
+4. Runtime `crashcapture.set()` from Lua, which always wins once a realm is up.
+
+Each line is a `key = value` pair using the setting names above, with or without the `CRASHCAPTURE_` prefix (case-insensitive).\
+Lines starting with `#` or `//` are comments inline comments must be preceded by whitespace.\
+A repeated key keeps the last value.
+
+```ini
+# crashes/crashcapture.cfg
+timeout = 30
+debug = 1 # verify signatures are not drifting
+CRASHCAPTURE_DIR = my reports
+phys_hook_ms = 500
+```
+
+The file is read from the crash folder resolved by environment variables and process arguments (default `crashes/`).\
+A `dir` line in the file redirects where reports are written, but the file itself is always read from that resolved folder.\
+All settings work here, including the launch-only ones (`dir`, `script`, `memapi`, `phys_hook`, `hang_kill`, `console`) and `disable = 1`.
 
 ### Lua Settings
 
@@ -117,7 +145,7 @@ crashcapture.patch("gm.phys.mindist_reschedule") -- re-enable it
 > `crashcapture.get("ready")` (see [Knowing when it's ready](#knowing-when-its-ready)).
 
 Keys mirror the settings above, lower-cased and without the `CRASHCAPTURE_`
-prefix: `timeout`, `max_age_days`, `loopbreak`, `phys_resume`, `phys_recover`, `phys_pin`, `phys_hook_ms`, `phys_resolve_delay`, `debug`, `engine_error`, `frame_profile`, `profile`, `profile_window`, `report_debounce`, `firstchance`, `window_watchdog`, `lua_heartbeat`, `manual_dump`, `symbols`, and `disable`.
+prefix: `timeout`, `max_age_days`, `loopbreak`, `phys_resume`, `phys_recover`, `phys_pin`, `phys_hook_ms`, `phys_resolve_delay`, `debug`, `engine_error`, `frame_profile`, `profile`, `profile_window`, `report_debounce`, `hang_map`, `hang_map_samples`, `hang_map_interval_ms`, `firstchance`, `window_watchdog`, `lua_heartbeat`, `manual_dump`, `symbols`, and `disable`.
 
 `dir`, `script`, `memapi`, `phys_hook` and `hang_kill` are launch-config only: `get` reads them, `set` is refused (they're decided before Lua exists, and `memapi` would be a way to grant itself the unsafe `mem.*` API).\
 `hang_kill` force-terminates the process, so it stays operator-controlled.\
