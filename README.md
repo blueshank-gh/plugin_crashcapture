@@ -58,7 +58,7 @@ The defaults are sensible, so you only need these if you want to change somethin
 | Variable | Default | What it does |
 |---|---|---|
 | `CRASHCAPTURE_TIMEOUT` | `10` | How many seconds the server can be unresponsive before it's treated as frozen. `0` turns freeze detection off. |
-| `CRASHCAPTURE_HANG_KILL` | `0` | After a freeze report, force-close the process this many seconds later. `0` means never. |
+| `CRASHCAPTURE_HANG_KILL` | `30` | After a freeze report, force-close the process this many seconds later. `0` means never. |
 | `CRASHCAPTURE_LOOPBREAK` | `1` | On a freeze, if the stalled thread is in Lua, arms a Lua debug hook on every realm that raises an error to break out of a stuck loop. |
 | `CRASHCAPTURE_PHYS_RESUME` | `1` | Linux only, when a fatal fault happens inside the physics tick (`PhysFrame`, under `Host_RunFrame`), pause physics and resume the game thread as if the physics call returned. |
 | `CRASHCAPTURE_PHYS_HOOK` | `1` | Linux only, prevents runaway physics hangs at the source instead of just reporting them. |

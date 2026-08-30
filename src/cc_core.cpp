@@ -248,7 +248,7 @@ namespace CrashCapture {
     {
         Config& c = Cfg();
         c.timeout_sec = EnvInt("CRASHCAPTURE_TIMEOUT", 10);
-        c.hang_kill_sec = EnvInt("CRASHCAPTURE_HANG_KILL", 0);
+        c.hang_kill_sec = EnvInt("CRASHCAPTURE_HANG_KILL", 30);
         c.max_age_days = EnvInt("CRASHCAPTURE_MAX_AGE_DAYS", 14);
         c.loopbreak = EnvInt("CRASHCAPTURE_LOOPBREAK", 1) != 0;
         c.phys_resume = EnvInt("CRASHCAPTURE_PHYS_RESUME", 1) != 0;
