@@ -117,7 +117,7 @@ phys_hook_ms = 500
 
 The file is read from the crash folder resolved by environment variables and process arguments (default `crashes/`).\
 A `dir` line in the file redirects where reports are written, but the file itself is always read from that resolved folder.\
-All settings work here, including the launch-only ones (`dir`, `script`, `memapi`, `phys_hook`, `hang_kill`, `console`) and `disable = 1`.
+All settings work here, including the launch-only ones (`dir`, `script`, `memapi`, `phys_hook`, `console`) and `disable = 1`.
 
 ### Lua Settings
 
@@ -145,10 +145,9 @@ crashcapture.patch("gm.phys.mindist_reschedule") -- re-enable it
 > `crashcapture.get("ready")` (see [Knowing when it's ready](#knowing-when-its-ready)).
 
 Keys mirror the settings above, lower-cased and without the `CRASHCAPTURE_`
-prefix: `timeout`, `max_age_days`, `loopbreak`, `phys_resume`, `phys_recover`, `phys_pin`, `phys_hook_ms`, `phys_resolve_delay`, `debug`, `engine_error`, `frame_profile`, `profile`, `profile_window`, `report_debounce`, `hang_map`, `hang_map_samples`, `hang_map_interval_ms`, `firstchance`, `window_watchdog`, `lua_heartbeat`, `manual_dump`, `symbols`, and `disable`.
+prefix: `timeout`, `hang_kill`, `max_age_days`, `loopbreak`, `phys_resume`, `phys_recover`, `phys_pin`, `phys_hook_ms`, `phys_resolve_delay`, `debug`, `engine_error`, `frame_profile`, `profile`, `profile_window`, `report_debounce`, `hang_map`, `hang_map_samples`, `hang_map_interval_ms`, `firstchance`, `window_watchdog`, `lua_heartbeat`, `manual_dump`, `symbols`, and `disable`.
 
-`dir`, `script`, `memapi`, `phys_hook` and `hang_kill` are launch-config only: `get` reads them, `set` is refused (they're decided before Lua exists, and `memapi` would be a way to grant itself the unsafe `mem.*` API).\
-`hang_kill` force-terminates the process, so it stays operator-controlled.\
+`dir`, `script`, `memapi` and `phys_hook` are launch-config only: `get` reads them, `set` is refused (they're decided before Lua exists, and `memapi` would be a way to grant itself the unsafe `mem.*` API).\
 `console` is not exposed to Lua at all.
 
 There's also a Linux-only diagnostic for the physics-resume feature:

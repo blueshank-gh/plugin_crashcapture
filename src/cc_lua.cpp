@@ -962,7 +962,7 @@ namespace CrashCapture {
         Config& c = Cfg();
         int n = 0;
         t[n++] = {"timeout", CK_INT, &c.timeout_sec, 0, false};
-        t[n++] = {"hang_kill", CK_INT, &c.hang_kill_sec, 0, true};
+        t[n++] = {"hang_kill", CK_INT, &c.hang_kill_sec, 0, false};
         t[n++] = {"max_age_days", CK_INT, &c.max_age_days, 0, false};
         t[n++] = {"loopbreak", CK_BOOL, &c.loopbreak, 0, false};
         t[n++] = {"phys_resume", CK_BOOL, &c.phys_resume, 0, false};
