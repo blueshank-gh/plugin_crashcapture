@@ -134,7 +134,11 @@ namespace CrashCapture {
             if (g_elf[i].map) { munmap(g_elf[i].map, g_elf[i].maplen); g_elf[i].map = NULL; }
     }
 
-    static bool SymResolveCore(uintptr_t addr, char* out, size_t outsz, bool demangle)
+    static volatile int g_symGate = 0;
+    static bool SymGateEnter() { return __sync_bool_compare_and_swap(&g_symGate, 0, 1); }
+    static void SymGateLeave() { __sync_bool_compare_and_swap(&g_symGate, 1, 0); }
+
+    static bool SymResolveCoreInner(uintptr_t addr, char* out, size_t outsz, bool demangle)
     {
         if (!addr || !out || outsz == 0) return false;
         Dl_info di;
@@ -180,13 +184,22 @@ namespace CrashCapture {
         return true;
     }
 
+    static bool SymResolveCore(uintptr_t addr, char* out, size_t outsz, bool demangle)
+    {
+        if (!addr || !out || outsz == 0) return false;
+        if (!SymGateEnter()) return false;
+        bool ok = SymResolveCoreInner(addr, out, outsz, demangle);
+        SymGateLeave();
+        return ok;
+    }
+
     bool Sym::Resolve(uintptr_t addr, char* out, size_t outsz)
     {
         if (!Cfg().symbols) return false;
         return SymResolveCore(addr, out, outsz, true);
     }
 
-    static uintptr_t ElfLookup(const CCModule* mod, const char* name)
+    static uintptr_t ElfLookupInner(const CCModule* mod, const char* name)
     {
         Dl_info di;
         if (!dladdr((void*)mod->base, &di) || !di.dli_fbase) return 0;
@@ -201,6 +214,14 @@ namespace CrashCapture {
                 return (uintptr_t)di.dli_fbase + s->st_value;
         }
         return 0;
+    }
+
+    static uintptr_t ElfLookup(const CCModule* mod, const char* name)
+    {
+        if (!SymGateEnter()) return 0;
+        uintptr_t a = ElfLookupInner(mod, name);
+        SymGateLeave();
+        return a;
     }
 
     uintptr_t Sym::Lookup(const char* module, const char* name)
@@ -474,6 +495,7 @@ namespace CrashCapture {
         if (Patch::Count() > 0)
             Report::Section("Patches", Patch::ReportSection, NULL, false);
         Report::Section("Diagnostics", Diag::Section, uctx, false);
+        Api::EmitReportSections();
         Report::Footer();
         Log::Close();
     }

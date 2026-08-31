@@ -86,6 +86,7 @@ namespace CrashCapture {
     void Init();
     void InstallHandlers();
     void Shutdown();
+    bool Ready();
     void Pulse();
     void Grace(int seconds);
     void DumpNow(const char* reason);
@@ -231,6 +232,12 @@ namespace CrashCapture {
     // --------- cc-diag ---
     namespace Diag { void Section(void* nativeCtx); }
 
+    // --------- cc-api ---
+    namespace Api {
+        void* V1();
+        void EmitReportSections();
+    }
+
     // --------- cc-platform-handlers ---
     // there are different kinds of classified stalls/hangs now.
     enum StallClass { STALL_UNKNOWN = 0, STALL_NATIVE, STALL_PHYSICS, STALL_LUA_INTERP, STALL_LUA_JIT };
@@ -277,6 +284,7 @@ namespace CrashCapture {
         void Start(bool deferredArm);
         void Stop();
         void Pulse();
+        bool HangState(uint64_t* sinceMs);
     }
     extern std::atomic<uint64_t> g_lastPulseMs;
     extern std::atomic<uint64_t> g_graceUntilMs;

@@ -421,4 +421,10 @@ namespace CrashCapture {
             }
         #endif
     }
+
+    bool Watchdog::HangState(uint64_t* sinceMs)
+    {
+        if (sinceMs) *sinceMs = g_hangPending ? g_hangStartMs : 0;
+        return g_hangPending;
+    }
 }

@@ -251,6 +251,7 @@ namespace CrashCapture {
         if (Patch::Count() > 0)
             Report::Section("Patches", Patch::ReportSection, NULL, false);
         Report::Section("Diagnostics", Diag::Section,  g_curCtx, false);
+        Api::EmitReportSections();
     }
 
     static const char* ExceptionName(DWORD code)
@@ -438,6 +439,7 @@ namespace CrashCapture {
         if (Patch::Count() > 0)
             Report::Section("Patches", Patch::ReportSection, NULL, false);
         Report::Section("Diagnostics", Diag::Section, g_curCtx, false);
+        Api::EmitReportSections();
 
         Report::Footer();
         Log::Close();
@@ -510,8 +512,12 @@ namespace CrashCapture {
     }
 
     // --------- windows-symbols (dbghelp) ---
-    
+
     static bool g_symReady = false;
+    static volatile long g_symGate = 0;
+    static bool SymGateEnter() { return InterlockedCompareExchange(&g_symGate, 1, 0) == 0; }
+    static void SymGateLeave() { InterlockedExchange(&g_symGate, 0); }
+
     void Sym::Init()
     {
         if (g_symReady || !Cfg().symbols) return;
@@ -531,6 +537,8 @@ namespace CrashCapture {
     bool Sym::Resolve(uintptr_t addr, char* out, size_t outsz)
     {
         if (!g_symReady || !addr || !out || outsz == 0) return false;
+        if (!SymGateEnter()) return false;
+        bool ok = false;
         __try {
             HANDLE proc = GetCurrentProcess();
             char b[sizeof(SYMBOL_INFO) + 512];
@@ -539,27 +547,28 @@ namespace CrashCapture {
             si->SizeOfStruct = sizeof(SYMBOL_INFO);
             si->MaxNameLen = 511;
             DWORD64 disp = 0;
-            if (!SymFromAddr(proc, addr, &disp, si)) return false;
-
-            IMAGEHLP_LINE64 line; memset(&line, 0, sizeof(line));
-            line.SizeOfStruct = sizeof(line);
-            DWORD ldisp = 0;
-            if (SymGetLineFromAddr64(proc, addr, &ldisp, &line) && line.FileName)
-                snprintf(out, outsz, "%s+0x%llx (%s:%lu)", si->Name,
-                         (unsigned long long)disp, line.FileName, (unsigned long)line.LineNumber);
-            else
-                snprintf(out, outsz, "%s+0x%llx", si->Name, (unsigned long long)disp);
-            return true;
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            return false;
-        }
+            if (SymFromAddr(proc, addr, &disp, si)) {
+                IMAGEHLP_LINE64 line; memset(&line, 0, sizeof(line));
+                line.SizeOfStruct = sizeof(line);
+                DWORD ldisp = 0;
+                if (SymGetLineFromAddr64(proc, addr, &ldisp, &line) && line.FileName)
+                    snprintf(out, outsz, "%s+0x%llx (%s:%lu)", si->Name,
+                             (unsigned long long)disp, line.FileName, (unsigned long)line.LineNumber);
+                else
+                    snprintf(out, outsz, "%s+0x%llx", si->Name, (unsigned long long)disp);
+                ok = true;
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) { ok = false; }
+        SymGateLeave();
+        return ok;
     }
 
     uintptr_t Sym::Lookup(const char* module, const char* name)
     {
         if (!name || !*name) return 0;
 
-        if (g_symReady && Cfg().symbols) {
+        if (g_symReady && Cfg().symbols && SymGateEnter()) {
+            uintptr_t symAddr = 0;
             __try {
                 char b[sizeof(SYMBOL_INFO) + 512];
                 SYMBOL_INFO* si = (SYMBOL_INFO*)b;
@@ -567,12 +576,16 @@ namespace CrashCapture {
                 si->SizeOfStruct = sizeof(SYMBOL_INFO);
                 si->MaxNameLen = 511;
                 if (SymFromName(GetCurrentProcess(), name, si) && si->Address) {
-                    if (!module) return (uintptr_t)si->Address;
-                    const CCModule* m = Modules::FindByName(module);
-                    if (m && (uintptr_t)si->Address >= m->base && (uintptr_t)si->Address < m->base + m->size)
-                        return (uintptr_t)si->Address;
+                    symAddr = (uintptr_t)si->Address;
+                    if (module) {
+                        const CCModule* m = Modules::FindByName(module);
+                        if (!(m && symAddr >= m->base && symAddr < m->base + m->size))
+                            symAddr = 0;
+                    }
                 }
-            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            } __except (EXCEPTION_EXECUTE_HANDLER) { symAddr = 0; }
+            SymGateLeave();
+            if (symAddr) return symAddr;
         }
 
         if (module) {

@@ -38,6 +38,17 @@ CC_EXPORT int gmod13_close(GarrysMod::lua_State* L)
     return 0;
 }
 
+// --------- external binary API (see include/crashcapture_api.h) ---
+CC_EXPORT void* CrashCapture_GetInterface(const char* name, int* returncode)
+{
+    if (name && strcmp(name, "CRASHCAPTURE001") == 0) {
+        if (returncode) *returncode = 0; // IFACE_OK
+        return CrashCapture::Api::V1();
+    }
+    if (returncode) *returncode = 1;     // IFACE_FAILED
+    return NULL;
+}
+
 // ---------------------------------------------------------------- server ---
 #if defined(INTERFACE_PLUGIN)
 
@@ -121,6 +132,9 @@ CrashCapturePlugin g_plugin;
 // Used for interface creation from source engine itself
 CC_EXPORT void* CreateInterface(const char* name, int* returncode)
 {
+    if (name && strcmp(name, "CRASHCAPTURE001") == 0)
+        return CrashCapture_GetInterface(name, returncode);
+
     if (name && (strcmp(name, CC_PLUGIN_INTERFACE_VERSION) == 0 ||
                  strcmp(name, "ISERVERPLUGINCALLBACKS003") == 0 ||
                  strcmp(name, "ISERVERPLUGINCALLBACKS002") == 0 ||
@@ -167,3 +181,11 @@ __attribute__((destructor))  static void cc_preload_fini() { CrashCapture::Shutd
 #endif
 
 #endif // INTERFACE_PRELOAD
+
+#if !defined(INTERFACE_PLUGIN)
+CC_EXPORT void* CreateInterface(const char* name, int* returncode)
+{
+    return CrashCapture_GetInterface(name, returncode);
+}
+
+#endif

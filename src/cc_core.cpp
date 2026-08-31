@@ -448,6 +448,11 @@ namespace CrashCapture {
         Log::CloseSession();
     }
 
+    bool Ready()
+    {
+        return g_initialized;
+    }
+
     void Pulse()
     {
         if (!g_initialized) return;
