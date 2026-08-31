@@ -35,7 +35,7 @@ local function setup(params)
             targetname ("plugin_crashcapture" .. params.bitness .. params.prefix)
 
             files { "src/**.cpp", "src/**.h", "src/**.hpp" }
-            includedirs { "src" }
+            includedirs { "src", "include" }
 
             filter "system:windows"
                 systemversion "latest"
