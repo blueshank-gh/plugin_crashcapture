@@ -7,7 +7,11 @@ namespace CrashCapture {
     struct EngineFrameStats {
         double work_ms, sleep_ms, total_ms, load_pct;
         double avg_work_ms, avg_total_ms;
+        double phys_ms, avg_phys_ms;
         uint64_t frames;
+        uint64_t phys_ticks;
+        uint64_t phys_calls;
+        int phys_paused;
     };
 
     namespace Engine {

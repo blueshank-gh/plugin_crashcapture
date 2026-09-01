@@ -4,12 +4,14 @@
 #include "features/cc_physrecover.h"
 #include "features/cc_physpatch.h"
 #include "tools/cc_signature.h"
+#include "tools/cc_hooking.h"
 
 #if defined(CC_LINUX)
 
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include <time.h>
 #include <ucontext.h>
 #include <unwind.h>
 #include <signal.h>
@@ -633,6 +635,7 @@ namespace CrashCapture {
     void Phys::Recover::PollGameThread()
     {
         PhysFrameStart();
+        if (Cfg().frame_profile) Phys::Frame::Install();
 
         uintptr_t slot = PhysEnvSlot();
         if (slot) {
@@ -958,6 +961,107 @@ namespace CrashCapture {
                     "(escape #%u; %d raw / %d pending offender(s); mh=0x%lx; mode@%p).\n",
                     g_physResumeCount, g_nRawIvp, g_nPending, (unsigned long)mh, (void*)mode);
         return PHYS_RESUMED;
+    }
+
+    // --------- physframe timing ---
+
+    static inline uint64_t FrameNowNs()
+    {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+    }
+
+    typedef void (*Fn_physframe)(float);
+    static Fn_physframe o_physframe = 0;
+    static void* g_physFrameHookTarget = 0;
+    static bool g_physFrameHooked = false;
+    static uint64_t g_physInFlightNs = 0;
+    static double g_frameMs = 0;
+    static double g_lastFrameMs = 0;
+    static double g_avgMs = 0;
+    static uint64_t g_avgFrames = 0;
+    static uint64_t g_frameTicks = 0;
+    static uint64_t g_lastFrameTicks = 0;
+    static uint64_t g_physTicks = 0;
+
+    static void h_physframe(float time)
+    {
+        uint64_t entry = FrameNowNs();
+        g_physInFlightNs = entry;
+        ++g_frameTicks;
+        o_physframe(time);
+        g_physInFlightNs = 0;
+        uint64_t exit = FrameNowNs();
+        g_frameMs += (double)(exit - entry) / 1e6;
+        ++g_physTicks;
+    }
+
+    void Phys::Frame::EndFrame()
+    {
+        g_lastFrameMs = g_frameMs;
+        g_lastFrameTicks = g_frameTicks;
+        if (g_frameTicks) {
+            g_avgMs = g_avgFrames ? g_avgMs * 0.95 + g_frameMs * 0.05 : g_frameMs;
+            ++g_avgFrames;
+        }
+        g_frameMs = 0;
+        g_frameTicks = 0;
+    }
+
+    void Phys::Frame::Install()
+    {
+        if (!Cfg().frame_profile) return;
+        if (!g_physFrameHooked) {
+            void* start = PhysFrameStart();
+            if (start && Hook::Install(start, (void*)h_physframe, (void**)&o_physframe)) {
+                g_physFrameHookTarget = start;
+                g_physFrameHooked = true;
+                Log::Debug("[CC-PHYS] physframe timing hooked @ %p\n", start);
+            }
+        }
+    }
+
+    void Phys::Frame::Uninstall()
+    {
+        if (g_physFrameHooked && g_physFrameHookTarget) Hook::Uninstall(g_physFrameHookTarget);
+        g_physFrameHookTarget = 0; o_physframe = 0;
+        g_physFrameHooked = false;
+        g_physInFlightNs = 0;
+        g_frameMs = 0; g_lastFrameMs = 0;
+        g_frameTicks = 0; g_lastFrameTicks = 0;
+    }
+
+    bool Phys::Frame::Active() { return g_physFrameHooked; }
+
+    bool Phys::Frame::Stats(Timing* out)
+    {
+        if (!g_physFrameHooked || !g_physTicks) return false;
+        if (out) {
+            if (g_physInFlightNs) {
+                out->ms = g_frameMs + (double)(FrameNowNs() - g_physInFlightNs) / 1e6;
+            } else {
+                out->ms = g_lastFrameMs;
+            }
+            out->avg_ms = g_avgMs;
+            out->ticks = g_physTicks;
+            out->frame_ticks = g_lastFrameTicks;
+        }
+        return true;
+    }
+}
+
+#else
+
+namespace CrashCapture {
+    namespace Phys {
+        namespace Frame {
+            void Install() {}
+            void Uninstall() {}
+            void EndFrame() {}
+            bool Active() { return false; }
+            bool Stats(Timing* out) { (void)out; return false; }
+        }
     }
 }
 

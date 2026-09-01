@@ -1,10 +1,10 @@
-// cc_profile - name-attributed profiler for C->Lua transitions (gamemode hooks, timers).
+// cc_profile - name-attributed profiler for C->Lua transitions (gamemode hooks, timers, concommands).
 
 #pragma once
 #include "crashcapture.h"
 
 namespace CrashCapture {
-    enum ProfileKind { PROF_OTHER = 0, PROF_HOOK, PROF_TIMER, PROF_LUA, PROF_NET };
+    enum ProfileKind { PROF_OTHER = 0, PROF_HOOK, PROF_TIMER, PROF_LUA, PROF_NET, PROF_CONCMD };
 
     struct ProfileBucket {
         char name[72];

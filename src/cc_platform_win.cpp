@@ -244,11 +244,14 @@ namespace CrashCapture {
         Report::Section("Registers",   Sec_Registers, NULL, true);
         Report::Section("Native stack", Sec_Stack,    NULL, true);
         Report::Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
+        if (HangMap::Count() > 0)
+            Report::Section("Hang map", HangMap::Section, NULL, true);
         Report::Section("Lua",         Sec_Lua,       NULL, false);
         Report::Section("Modules",     Sec_Modules,   NULL, false);
         if (Patch::Count() > 0)
             Report::Section("Patches", Patch::ReportSection, NULL, false);
         Report::Section("Diagnostics", Diag::Section,  g_curCtx, false);
+        Api::EmitReportSections();
     }
 
     static const char* ExceptionName(DWORD code)
@@ -426,6 +429,8 @@ namespace CrashCapture {
         Report::Section("Registers", Sec_Registers, NULL, true);
         Report::Section("Native stack", Sec_Stack, NULL, true);
         Report::Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
+        if (HangMap::Count() > 0)
+            Report::Section("Hang map", HangMap::Section, NULL, true);
         Report::Section("Lua", Sec_Lua, NULL, false);
         
         if (suspended) ResumeThread(th);
@@ -434,6 +439,7 @@ namespace CrashCapture {
         if (Patch::Count() > 0)
             Report::Section("Patches", Patch::ReportSection, NULL, false);
         Report::Section("Diagnostics", Diag::Section, g_curCtx, false);
+        Api::EmitReportSections();
 
         Report::Footer();
         Log::Close();
@@ -458,6 +464,34 @@ namespace CrashCapture {
         ResumeThread(th);
         return armed;
     }
+
+    int Platform::HangMapBurst(int samples, int intervalMs)
+    {
+        if (samples <= 0) return 0;
+        HANDLE th = (HANDLE)g_gameThreadHandle;
+        if (!th || g_gameThreadId == GetCurrentThreadId()) return 0;
+
+        HangMap::Reset();
+        for (int i = 0; i < samples; ++i) {
+            if (SuspendThread(th) == (DWORD)-1) break;
+            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
+            ctx.ContextFlags = CONTEXT_FULL;
+            if (GetThreadContext(th, &ctx)) {
+                #if defined(CC_X64)
+                    uintptr_t pc = (uintptr_t)ctx.Rip;
+                #else
+                    uintptr_t pc = (uintptr_t)ctx.Eip;
+                #endif
+                uintptr_t pcs[12];
+                int n = Platform::Backtrace(&ctx, pcs, 12);
+                HangMap::Capture(pc, pcs, n);
+            }
+            ResumeThread(th);
+            if (i + 1 < samples && intervalMs > 0) Sleep((DWORD)intervalMs);
+        }
+        return HangMap::Count();
+    }
+
     int Platform::SetPhysPaused(int) { return 0; }
     int Platform::PhysPaused() { return -1; }
 
@@ -478,8 +512,12 @@ namespace CrashCapture {
     }
 
     // --------- windows-symbols (dbghelp) ---
-    
+
     static bool g_symReady = false;
+    static volatile long g_symGate = 0;
+    static bool SymGateEnter() { return InterlockedCompareExchange(&g_symGate, 1, 0) == 0; }
+    static void SymGateLeave() { InterlockedExchange(&g_symGate, 0); }
+
     void Sym::Init()
     {
         if (g_symReady || !Cfg().symbols) return;
@@ -499,6 +537,8 @@ namespace CrashCapture {
     bool Sym::Resolve(uintptr_t addr, char* out, size_t outsz)
     {
         if (!g_symReady || !addr || !out || outsz == 0) return false;
+        if (!SymGateEnter()) return false;
+        bool ok = false;
         __try {
             HANDLE proc = GetCurrentProcess();
             char b[sizeof(SYMBOL_INFO) + 512];
@@ -507,27 +547,28 @@ namespace CrashCapture {
             si->SizeOfStruct = sizeof(SYMBOL_INFO);
             si->MaxNameLen = 511;
             DWORD64 disp = 0;
-            if (!SymFromAddr(proc, addr, &disp, si)) return false;
-
-            IMAGEHLP_LINE64 line; memset(&line, 0, sizeof(line));
-            line.SizeOfStruct = sizeof(line);
-            DWORD ldisp = 0;
-            if (SymGetLineFromAddr64(proc, addr, &ldisp, &line) && line.FileName)
-                snprintf(out, outsz, "%s+0x%llx (%s:%lu)", si->Name,
-                         (unsigned long long)disp, line.FileName, (unsigned long)line.LineNumber);
-            else
-                snprintf(out, outsz, "%s+0x%llx", si->Name, (unsigned long long)disp);
-            return true;
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            return false;
-        }
+            if (SymFromAddr(proc, addr, &disp, si)) {
+                IMAGEHLP_LINE64 line; memset(&line, 0, sizeof(line));
+                line.SizeOfStruct = sizeof(line);
+                DWORD ldisp = 0;
+                if (SymGetLineFromAddr64(proc, addr, &ldisp, &line) && line.FileName)
+                    snprintf(out, outsz, "%s+0x%llx (%s:%lu)", si->Name,
+                             (unsigned long long)disp, line.FileName, (unsigned long)line.LineNumber);
+                else
+                    snprintf(out, outsz, "%s+0x%llx", si->Name, (unsigned long long)disp);
+                ok = true;
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) { ok = false; }
+        SymGateLeave();
+        return ok;
     }
 
     uintptr_t Sym::Lookup(const char* module, const char* name)
     {
         if (!name || !*name) return 0;
 
-        if (g_symReady && Cfg().symbols) {
+        if (g_symReady && Cfg().symbols && SymGateEnter()) {
+            uintptr_t symAddr = 0;
             __try {
                 char b[sizeof(SYMBOL_INFO) + 512];
                 SYMBOL_INFO* si = (SYMBOL_INFO*)b;
@@ -535,12 +576,16 @@ namespace CrashCapture {
                 si->SizeOfStruct = sizeof(SYMBOL_INFO);
                 si->MaxNameLen = 511;
                 if (SymFromName(GetCurrentProcess(), name, si) && si->Address) {
-                    if (!module) return (uintptr_t)si->Address;
-                    const CCModule* m = Modules::FindByName(module);
-                    if (m && (uintptr_t)si->Address >= m->base && (uintptr_t)si->Address < m->base + m->size)
-                        return (uintptr_t)si->Address;
+                    symAddr = (uintptr_t)si->Address;
+                    if (module) {
+                        const CCModule* m = Modules::FindByName(module);
+                        if (!(m && symAddr >= m->base && symAddr < m->base + m->size))
+                            symAddr = 0;
+                    }
                 }
-            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            } __except (EXCEPTION_EXECUTE_HANDLER) { symAddr = 0; }
+            SymGateLeave();
+            if (symAddr) return symAddr;
         }
 
         if (module) {

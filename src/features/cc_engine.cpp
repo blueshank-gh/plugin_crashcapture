@@ -2,6 +2,7 @@
 
 #include "crashcapture.h"
 #include "features/cc_engine.h"
+#include "features/cc_physrecover.h"
 #include "features/cc_profile.h"
 #include "tools/cc_hooking.h"
 #include "tools/cc_signature.h"
@@ -144,6 +145,10 @@ namespace CrashCapture {
         g_avgWork  = g_frames ? g_avgWork  * 0.95 + work  * 0.05 : work;
         g_avgTotal = g_frames ? g_avgTotal * 0.95 + total * 0.05 : total;
         ++g_frames;
+
+        #if defined(CC_LINUX)
+            Phys::Frame::EndFrame();
+        #endif
     }
 
     bool Engine::FrameStats(EngineFrameStats* out)
@@ -156,6 +161,22 @@ namespace CrashCapture {
         out->avg_work_ms = g_avgWork;
         out->avg_total_ms = g_avgTotal;
         out->frames = g_frames;
+        #if defined(CC_LINUX)
+            Phys::Frame::Timing pt;
+            if (Phys::Frame::Stats(&pt)) {
+                out->phys_ms = pt.ms;
+                out->avg_phys_ms = pt.avg_ms;
+                out->phys_ticks = pt.ticks;
+                out->phys_calls = pt.frame_ticks;
+            } else {
+                out->phys_ms = 0; out->avg_phys_ms = 0; out->phys_ticks = 0;
+                out->phys_calls = 0;
+            }
+        #else
+            out->phys_ms = 0; out->avg_phys_ms = 0; out->phys_ticks = 0;
+            out->phys_calls = 0;
+        #endif
+        out->phys_paused = Platform::PhysPaused();
         return true;
     }
 
@@ -176,6 +197,14 @@ namespace CrashCapture {
         Log::F("- **total** : %.3f ms\n", s.avg_total_ms);
         Log::F("- **fps** : ~%.1f\n", s.avg_total_ms > 0 ? 1000.0 / s.avg_total_ms : 0.0);
         Log::F("- **frames sampled** : %llu\n", (unsigned long long)s.frames);
+        if (s.phys_ticks) {
+            Log::Str("\n**Physics**\n");
+            Log::F("- **phys** : %.3f ms (%llu ticks this frame)\n", s.phys_ms, (unsigned long long)s.phys_calls);
+            Log::F("- **avg phys** : %.3f ms\n", s.avg_phys_ms);
+            Log::F("- **phys ticks** : %llu\n", (unsigned long long)s.phys_ticks);
+            if (s.phys_paused >= 0)
+                Log::F("- **paused** : %s\n", s.phys_paused ? "yes" : "no");
+        }
     }
 
     // --- loading state ---

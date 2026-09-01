@@ -123,6 +123,12 @@ namespace CrashCapture {
         o_ue(mindist, a2, a3);
     }
 
+    struct DoImpactArgs { void* mindist; };
+    static void DoImpactInner(void* arg)
+    {
+        ((Fn_di)o_di)(((DoImpactArgs*)arg)->mindist);
+    }
+
     static void h_di(void* mindist)
     {
         BudgetCheck(mindist);
@@ -138,7 +144,12 @@ namespace CrashCapture {
                 return;
             }
         }
-        o_di(mindist);
+        DoImpactArgs d = { mindist };
+        if (!RunProtectedQuiet(DoImpactInner, &d)) {
+            Phys::Recover::NoteHookLag((uintptr_t)mindist);
+            Log::Debug("[CC-HOOK] do_impact faulted on mindist 0x%lx\n",
+                       (unsigned long)(uintptr_t)mindist);
+        }
     }
     static void h_stev(void* mindist, void* env)
     {

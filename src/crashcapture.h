@@ -42,7 +42,7 @@
     #define CC_SIDE "client"
 #endif
 
-#define CC_VERSION "1.4.1"
+#define CC_VERSION "1.5.0"
 #define CC_BUILD __DATE__ " " __TIME__
 
 namespace CrashCapture {
@@ -59,6 +59,9 @@ namespace CrashCapture {
         bool phys_hook;       // CRASHCAPTURE_PHYS_HOOK
         int phys_hook_ms;     // CRASHCAPTURE_PHYS_HOOK_MS
         int report_debounce_sec; // CRASHCAPTURE_REPORT_DEBOUNCE
+        bool hang_map;         // CRASHCAPTURE_HANG_MAP
+        int hang_map_samples;  // CRASHCAPTURE_HANG_MAP_SAMPLES
+        int hang_map_interval_ms; // CRASHCAPTURE_HANG_MAP_INTERVAL_MS
         int phys_resolve_delay; // CRASHCAPTURE_PHYS_RESOLVE_DELAY
         int phys_defer_eps_us; // CRASHCAPTURE_PHYS_DEFER_EPS_US (0 = off)
         bool firstchance;     // CRASHCAPTURE_FIRSTCHANCE
@@ -77,11 +80,13 @@ namespace CrashCapture {
         char script[512];     // CRASHCAPTURE_SCRIPT
     };
     Config& Cfg();
+    const char* CfgRaw(const char* name);
 
     // --------- cc-lifecycle ---
     void Init();
     void InstallHandlers();
     void Shutdown();
+    bool Ready();
     void Pulse();
     void Grace(int seconds);
     void DumpNow(const char* reason);
@@ -89,6 +94,7 @@ namespace CrashCapture {
     uint64_t MonotonicMs();
     void UtcStamp(char* out, size_t outsz);
     void UtcStampReadable(char* out, size_t outsz);
+    void FormatMs(uint64_t ms, char* out, size_t outsz);
 
     typedef void (*SectionFn)(void* arg);
     bool RunProtected(SectionFn fn, void* arg);
@@ -205,6 +211,14 @@ namespace CrashCapture {
         void NoteRecovered(const char* method, uint64_t downtimeMs, const char* stall, const char* reason, const char* report);
     }
 
+    // --------- cc-hangmap ---
+    namespace HangMap {
+        void Reset();
+        void Capture(uintptr_t pc, const uintptr_t* frames, int nframes);
+        int Count();
+        void Section(void* arg);
+    }
+
     // --------- cc-physhook (Linux: detour IVP to prevent physics hangs) ---
     namespace Phys {
         namespace Bind { // IVP detour install/remove (named Bind so it doesn't shadow tools Hook::)
@@ -218,6 +232,12 @@ namespace CrashCapture {
 
     // --------- cc-diag ---
     namespace Diag { void Section(void* nativeCtx); }
+
+    // --------- cc-api ---
+    namespace Api {
+        void* V1();
+        void EmitReportSections();
+    }
 
     // --------- cc-platform-handlers ---
     // there are different kinds of classified stalls/hangs now.
@@ -234,6 +254,7 @@ namespace CrashCapture {
         int  EnumThreads(CCThread* out, int max);
         int  RequestLuaBreak();
         int  RequestPhysResolve(const char* kind, const char* reason, bool writeReport); // classify(+dump if writeReport)+resume-if-physics (1 resumed, 0 handled-no-resume, <0 failed)
+        int  HangMapBurst(int samples, int intervalMs); // sample the stuck game thread repeatedly
         int  SetPhysPaused(int paused);
         int  PhysPaused();
         void SuppressFurtherReports();
@@ -252,6 +273,7 @@ namespace CrashCapture {
         void SetContext(const char* kind, const char* reason, uintptr_t fault);
         void SetMapName(const char* name);
         const char* MapName();
+        uint64_t MapTimeMs();
         const char* Kind();
         const char* Reason();
         uintptr_t Fault();
@@ -264,6 +286,7 @@ namespace CrashCapture {
         void Start(bool deferredArm);
         void Stop();
         void Pulse();
+        bool HangState(uint64_t* sinceMs);
     }
     extern std::atomic<uint64_t> g_lastPulseMs;
     extern std::atomic<uint64_t> g_graceUntilMs;

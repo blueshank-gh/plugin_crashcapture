@@ -962,7 +962,7 @@ namespace CrashCapture {
         Config& c = Cfg();
         int n = 0;
         t[n++] = {"timeout", CK_INT, &c.timeout_sec, 0, false};
-        t[n++] = {"hang_kill", CK_INT, &c.hang_kill_sec, 0, true};
+        t[n++] = {"hang_kill", CK_INT, &c.hang_kill_sec, 0, false};
         t[n++] = {"max_age_days", CK_INT, &c.max_age_days, 0, false};
         t[n++] = {"loopbreak", CK_BOOL, &c.loopbreak, 0, false};
         t[n++] = {"phys_resume", CK_BOOL, &c.phys_resume, 0, false};
@@ -978,6 +978,9 @@ namespace CrashCapture {
         t[n++] = {"profile", CK_BOOL, &c.profile, 0, false};
         t[n++] = {"profile_window", CK_INT, &c.profile_window, 0, false};
         t[n++] = {"report_debounce", CK_INT, &c.report_debounce_sec, 0, false};
+        t[n++] = {"hang_map", CK_BOOL, &c.hang_map, 0, false};
+        t[n++] = {"hang_map_samples", CK_INT, &c.hang_map_samples, 0, false};
+        t[n++] = {"hang_map_interval_ms", CK_INT, &c.hang_map_interval_ms, 0, false};
         t[n++] = {"firstchance", CK_BOOL, &c.firstchance, 0, false};
         t[n++] = {"window_watchdog", CK_BOOL, &c.window_watchdog, 0, false};
         t[n++] = {"lua_heartbeat", CK_BOOL, &c.lua_heartbeat, 0, false};
@@ -1055,6 +1058,12 @@ namespace CrashCapture {
             if (Cfg().phys_hook_ms < 20) Cfg().phys_hook_ms = 20;
         } else if (strcmp(key, "report_debounce") == 0) {
             if (Cfg().report_debounce_sec < 0) Cfg().report_debounce_sec = 0;
+        } else if (strcmp(key, "hang_map_samples") == 0) {
+            if (Cfg().hang_map_samples < 1) Cfg().hang_map_samples = 1;
+            if (Cfg().hang_map_samples > 64) Cfg().hang_map_samples = 64;
+        } else if (strcmp(key, "hang_map_interval_ms") == 0) {
+            if (Cfg().hang_map_interval_ms < 1) Cfg().hang_map_interval_ms = 1;
+            if (Cfg().hang_map_interval_ms > 5000) Cfg().hang_map_interval_ms = 5000;
         } else if (strcmp(key, "phys_resolve_delay") == 0) {
             if (Cfg().phys_resolve_delay < 0) Cfg().phys_resolve_delay = 0;
         }
@@ -1525,6 +1534,11 @@ namespace CrashCapture {
         l->PushNumber(s.avg_work_ms); l->SetField(-2, "avg_work_ms");
         l->PushNumber(s.avg_total_ms); l->SetField(-2, "avg_total_ms");
         l->PushNumber((double)s.frames); l->SetField(-2, "frames");
+        l->PushNumber(s.phys_ms); l->SetField(-2, "phys_ms");
+        l->PushNumber(s.avg_phys_ms); l->SetField(-2, "avg_phys_ms");
+        l->PushNumber((double)s.phys_ticks); l->SetField(-2, "phys_ticks");
+        l->PushNumber((double)s.phys_calls); l->SetField(-2, "phys_calls");
+        if (s.phys_paused >= 0) { l->PushBool(s.phys_paused != 0); l->SetField(-2, "phys_paused"); }
         return 1;
     }
 
@@ -1666,7 +1680,7 @@ namespace CrashCapture {
         }
 
         {
-            const char* dis = getenv("CRASHCAPTURE_DISABLE");
+            const char* dis = CfgRaw("CRASHCAPTURE_DISABLE");
             if (dis && atoi(dis) != 0) g_luaDisabled = true;
         }
 
