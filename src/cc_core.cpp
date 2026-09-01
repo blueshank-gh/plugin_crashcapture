@@ -78,6 +78,20 @@ namespace CrashCapture {
                 y, m, d, sec / 3600, (sec / 60) % 60, sec % 60);
     }
 
+    void FormatMs(uint64_t ms, char* out, size_t outsz)
+    {
+        if (ms < 1000) { snprintf(out, outsz, "%llu ms", (unsigned long long)ms); return; }
+        uint64_t s = ms / 1000;
+        uint64_t d = s / 86400;
+        uint64_t h = (s / 3600) % 24;
+        uint64_t m = (s / 60) % 60;
+        uint64_t sec = s % 60;
+        if (d) snprintf(out, outsz, "%llud %lluh %llum %llus", (unsigned long long)d, (unsigned long long)h, (unsigned long long)m, (unsigned long long)sec);
+        else if (h) snprintf(out, outsz, "%lluh %llum %llus", (unsigned long long)h, (unsigned long long)m, (unsigned long long)sec);
+        else if (m) snprintf(out, outsz, "%llum %llus", (unsigned long long)m, (unsigned long long)sec);
+        else snprintf(out, outsz, "%llus", (unsigned long long)sec);
+    }
+
     static const char* CmdlineLookup(const char* name)
     {
         static char buf[8192];
@@ -498,6 +512,7 @@ namespace CrashCapture {
     static char g_ctxReason[256] = {0};
     static uintptr_t g_ctxFault = 0;
     static char g_mapName[128] = {0};
+    static uint64_t g_mapStartMs = 0;
 
     void Report::SetContext(const char* kind, const char* reason, uintptr_t fault)
     {
@@ -507,9 +522,13 @@ namespace CrashCapture {
     }
     void Report::SetMapName(const char* name)
     {
-        snprintf(g_mapName, sizeof(g_mapName), "%s", name ? name : "");
+        const char* nn = name ? name : "";
+        if (!g_mapName[0] || strcmp(g_mapName, nn) != 0)
+            g_mapStartMs = MonotonicMs();
+        snprintf(g_mapName, sizeof(g_mapName), "%s", nn);
     }
     const char* Report::MapName() { return g_mapName[0] ? g_mapName : NULL; }
+    uint64_t Report::MapTimeMs() { return g_mapStartMs ? MonotonicMs() - g_mapStartMs : 0; }
     const char* Report::Kind() { return g_ctxKind; }
     const char* Report::Reason() { return g_ctxReason; }
     uintptr_t Report::Fault() { return g_ctxFault; }
@@ -559,7 +578,10 @@ namespace CrashCapture {
         Log::F("- **reason** : `%s`\n", reason ? reason : "-");
         Log::F("- **build** : v" CC_VERSION " " CC_OS "/" CC_ARCH "/" CC_CONFIG "/" CC_SIDE " (" __DATE__ " " __TIME__ ")\n");
         Log::F("- **time** : %s UTC (epoch %lld)\n", stamp, (long long)time(NULL));
-        Log::F("- **uptime** : %llu ms since init\n", (unsigned long long)(MonotonicMs() - g_startMs));
+        uint64_t up = MonotonicMs() - g_startMs;
+        char dur[48];
+        FormatMs(up, dur, sizeof(dur));
+        Log::F("- **uptime** : %s (%llu ms since init)\n", dur, (unsigned long long)up);
         #if defined(CC_WINDOWS)
             Log::F("- **process** : pid=%u\n", (unsigned)GetCurrentProcessId());
         #else
@@ -570,7 +592,12 @@ namespace CrashCapture {
                 (unsigned long long)(MonotonicMs() - g_lastPulseMs));
         else Log::Str("- **pulse** : never (no heartbeat source in this configuration)\n");
         if (Report::MapName())
+        {
+            char mapdur[48];
+            FormatMs(Report::MapTimeMs(), mapdur, sizeof(mapdur));
             Log::F("- **map** : `%s`\n", Report::MapName());
+            Log::F("- **maptime** : %s on this map\n", mapdur);
+        }
         else Log::Str("- **map** : `unknown` (no map)\n");
         Patch::ReportHeader();
         Log::Flush();

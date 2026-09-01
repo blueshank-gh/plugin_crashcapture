@@ -94,6 +94,7 @@ namespace CrashCapture {
     uint64_t MonotonicMs();
     void UtcStamp(char* out, size_t outsz);
     void UtcStampReadable(char* out, size_t outsz);
+    void FormatMs(uint64_t ms, char* out, size_t outsz);
 
     typedef void (*SectionFn)(void* arg);
     bool RunProtected(SectionFn fn, void* arg);
@@ -272,6 +273,7 @@ namespace CrashCapture {
         void SetContext(const char* kind, const char* reason, uintptr_t fault);
         void SetMapName(const char* name);
         const char* MapName();
+        uint64_t MapTimeMs();
         const char* Kind();
         const char* Reason();
         uintptr_t Fault();
