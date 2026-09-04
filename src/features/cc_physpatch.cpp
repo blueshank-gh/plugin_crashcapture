@@ -10,6 +10,7 @@
 #include "features/cc_physrecover.h"
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
 
 namespace CrashCapture {
     static const CCTarget kPatchTargets[] = {
@@ -29,6 +30,12 @@ namespace CrashCapture {
                 {{CC_STEP_END, 0, 0}}},
             {"patch.vhash_store_find", "vphysics",
                 "_ZN15IVP_VHash_Store9find_elemEPvj", NULL,
+                {{CC_STEP_END, 0, 0}}},
+            {"patch.give_world_coords_at", "vphysics",
+                "_ZN24IVP_Compact_Ledge_Solver20give_world_coords_ATEPK16IVP_Compact_EdgeP21IVP_Cache_Ledge_PointP11IVP_U_Point", NULL,
+                {{CC_STEP_END, 0, 0}}},
+            {"patch.edge_next_table", "vphysics",
+                "_ZN16IVP_Compact_Edge10next_tableE", NULL,
                 {{CC_STEP_END, 0, 0}}},
         #elif defined(CC_X64)
             {"patch.vhash_find", "vphysics", NULL,
@@ -109,6 +116,53 @@ namespace CrashCapture {
     typedef int (*Fn_ff)(void*, void*, void*, void*, void*);
     static Fn_ff o_ff = 0;
 
+    typedef void (*Fn_gwc)(const void*, void*, double*);
+    static Fn_gwc o_gwc = 0;
+    static const int* g_edgeNextTable = 0;
+
+    struct FFCoordsArgs { const char* e1; void* c1; const char* e2; void* c2; bool skip; };
+    static void FFCoordsInner(void* argp)
+    {
+        FFCoordsArgs* a = (FFCoordsArgs*)argp;
+        for (int side = 0; side < 2; ++side) {
+            const char* e = side ? a->e2 : a->e1;
+            void* clp = side ? a->c2 : a->c1;
+            bool allBad = true;
+            for (int k = 0; k < 3; ++k) {
+                double p[3];
+                o_gwc(e, clp, p);
+                if (isfinite(p[0]) && isfinite(p[1]) && isfinite(p[2])) {
+                    allBad = false;
+                    break;
+                }
+                e += g_edgeNextTable[((uintptr_t)e & 0xC) >> 2];
+            }
+            if (allBad) {
+                a->skip = true;
+                return;
+            }
+        }
+        a->skip = false;
+    }
+
+    static bool FFUnsalvageable(void* e1, void* c1, void* e2, void* c2)
+    {
+        if (!o_gwc)
+            o_gwc = (Fn_gwc)Sig::Get("patch.give_world_coords_at");
+        if (!g_edgeNextTable)
+            g_edgeNextTable = (const int*)Sig::Get("patch.edge_next_table");
+        if (!o_gwc || !g_edgeNextTable || !Mem::IsReadable((void*)g_edgeNextTable, 4 * sizeof(int)))
+            return false;
+        FFCoordsArgs a;
+        a.e1 = (const char*)e1;
+        a.c1 = c1;
+        a.e2 = (const char*)e2;
+        a.c2 = c2;
+        a.skip = true;
+        RunProtectedQuiet(FFCoordsInner, &a);
+        return a.skip;
+    }
+
     static int h_ff(void* mms, void* e1, void* e2, void* cA, void* cB)
     {
         if (mms && Mem::IsReadable(mms, sizeof(void*))) {
@@ -125,8 +179,15 @@ namespace CrashCapture {
                 return 1; // converged, the object exploded to NaN
             }
         }
-        if (e1 && e2)
+        if (e1 && e2) {
+            if (FFUnsalvageable(e1, cA, e2, cB)) {
+                Log::Debug("[CC-PATCH] p_minimize_FF skipped: mindist 0x%lx vertex coordinates "
+                           "are non-finite\n",
+                        (unsigned long)(uintptr_t)mms);
+                return 1;
+            }
             return o_ff(mms, e1, e2, cA, cB);
+        }
         Log::Debug("[CC-PATCH] p_minimize_FF skipped: null edge (mindist 0x%lx)\n",
                 (unsigned long)(uintptr_t)mms);
         return 1; // converged, the retained mindist is stale
@@ -520,7 +581,7 @@ namespace CrashCapture {
             {
                 "gm.phys.mindist_stale_ff",
                 "gmod IVP retained-mindist UAF",
-                "skip p_minimize_FF when the retained mindist references a stale object or a NaN-position object",
+                "skip p_minimize_FF when the retained mindist references a stale object, a NaN-position object, or a solve whose vertex coordinates are non-finite",
                 CC_PATCH_DETOUR,
                 {"patch.p_minimize_ff", "vphysics",
                     "_ZN27IVP_Mindist_Minimize_Solver13p_minimize_FFEPK16IVP_Compact_EdgeS2_P21IVP_Cache_Ledge_PointS4_",
@@ -794,7 +855,7 @@ namespace CrashCapture {
             {
                 "gm.phys.mindist_stale_ff",
                 "gmod IVP retained-mindist UAF",
-                "skip p_minimize_FF when the retained mindist references a stale object or a NaN-position object",
+                "skip p_minimize_FF when the retained mindist references a stale object, a NaN-position object, or a solve whose vertex coordinates are non-finite",
                 CC_PATCH_DETOUR,
                 {"patch.p_minimize_ff", "vphysics", NULL,
                     "55 48 89 E5 41 57 4D 89 C7 41 56 41 BE 03 00 00 00 41 55 41 54 49 89 F4 53 48 81 EC 78 03 00 00",
