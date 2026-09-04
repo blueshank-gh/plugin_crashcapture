@@ -42,7 +42,7 @@
     #define CC_SIDE "client"
 #endif
 
-#define CC_VERSION "1.5.0"
+#define CC_VERSION "1.5.1"
 #define CC_BUILD __DATE__ " " __TIME__
 
 namespace CrashCapture {
@@ -76,6 +76,7 @@ namespace CrashCapture {
         int profile_window;   // CRASHCAPTURE_PROFILE_WINDOW
         bool memapi;          // CRASHCAPTURE_MEMAPI
         bool patches;         // CRASHCAPTURE_PATCHES
+        bool client_lua;      // CRASHCAPTURE_CLIENT_LUA
         char dir[512];        // CRASHCAPTURE_DIR
         char script[512];     // CRASHCAPTURE_SCRIPT
     };
@@ -195,6 +196,7 @@ namespace CrashCapture {
         void InstallHeartbeatAll();
         void InstallApi(void* iface);
         bool EnsureApi();
+        void InstallConCommands(void* iface);
         bool InstallSideloadBootstrap();
         void* SharedHandle();
         void* Iface(int realm);

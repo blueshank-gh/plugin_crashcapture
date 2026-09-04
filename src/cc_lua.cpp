@@ -305,6 +305,22 @@ namespace CrashCapture {
         return -1;
     }
 
+    static bool ClientRealmGate(int r)
+    {
+        return r == LuaState::CLIENT && !g_moduleLoad && !Cfg().client_lua;
+    }
+
+    static bool ClientRealmIsolated(int r)
+    {
+        if (!ClientRealmGate(r)) return false;
+        static bool saidOnce = false;
+        if (!saidOnce) {
+            saidOnce = true;
+            Log::Notice("[Crash Capture] client Lua isolation: skipping the crashcapture API and heartbeat on the client realm\n");
+        }
+        return true;
+    }
+
     void Lua::MarkModuleLoad() { g_moduleLoad = true; }
 
     void Lua::OnInit(void* iface)
@@ -314,6 +330,7 @@ namespace CrashCapture {
         if (r < 0) return;
         if (g_realm[r] && g_realm[r] != l) ClearRealm(r);
         g_realm[r] = l;
+        Lua::InstallConCommands(iface);
         Lua::InstallApi(iface);
         Lua::InstallHeartbeat(iface);
     }
@@ -919,6 +936,7 @@ namespace CrashCapture {
         if (!Lua::IfaceLive(L)) return;
 
         int r = RealmOf(L);
+        if (ClientRealmIsolated(r)) return;
         if (r >= 0) {
             if (g_hbInstalled[r]) return;
             g_realm[r] = L;
@@ -947,6 +965,7 @@ namespace CrashCapture {
         for (int r = 0; r < 3; ++r) {
             ILuaInterface* l = LiveRealm(r);
             if (!l) continue;
+            Lua::InstallConCommands(l);
             Lua::InstallApi(l);
             Lua::InstallHeartbeat(l);
         }
@@ -989,6 +1008,7 @@ namespace CrashCapture {
         t[n++] = {"dir", CK_STR,  c.dir, sizeof(c.dir), true};
         t[n++] = {"script", CK_STR,  c.script, sizeof(c.script), true};
         t[n++] = {"memapi", CK_BOOL, &c.memapi, 0, true};
+        t[n++] = {"client_lua", CK_BOOL, &c.client_lua, 0, true};
         return n;
     }
 
@@ -1011,6 +1031,33 @@ namespace CrashCapture {
             Shutdown();
         } else {
             Init(); // full re-arm: reload config, handlers, watchdog
+        }
+    }
+
+    static void CfgPostWrite(const char* key)
+    {
+        if (strcmp(key, "timeout") == 0) {
+            if (Cfg().timeout_sec > 0) Watchdog::Start(false);
+        } else if (strcmp(key, "lua_heartbeat") == 0) {
+            if (Cfg().lua_heartbeat) Lua::InstallHeartbeatAll();
+        } else if (strcmp(key, "debug") == 0) {
+            Log::SetDebug(Cfg().debug);
+        } else if (strcmp(key, "profile") == 0) {
+            Profile::SetEnabled(Cfg().profile);
+        } else if (strcmp(key, "profile_window") == 0) {
+            if (Cfg().profile_window < 0) Cfg().profile_window = 0;
+        } else if (strcmp(key, "phys_hook_ms") == 0) {
+            if (Cfg().phys_hook_ms < 20) Cfg().phys_hook_ms = 20;
+        } else if (strcmp(key, "report_debounce") == 0) {
+            if (Cfg().report_debounce_sec < 0) Cfg().report_debounce_sec = 0;
+        } else if (strcmp(key, "hang_map_samples") == 0) {
+            if (Cfg().hang_map_samples < 1) Cfg().hang_map_samples = 1;
+            if (Cfg().hang_map_samples > 64) Cfg().hang_map_samples = 64;
+        } else if (strcmp(key, "hang_map_interval_ms") == 0) {
+            if (Cfg().hang_map_interval_ms < 1) Cfg().hang_map_interval_ms = 1;
+            if (Cfg().hang_map_interval_ms > 5000) Cfg().hang_map_interval_ms = 5000;
+        } else if (strcmp(key, "phys_resolve_delay") == 0) {
+            if (Cfg().phys_resolve_delay < 0) Cfg().phys_resolve_delay = 0;
         }
     }
 
@@ -1044,30 +1091,7 @@ namespace CrashCapture {
             }
         }
 
-        if (strcmp(key, "timeout") == 0) {
-            if (Cfg().timeout_sec > 0) Watchdog::Start(false);
-        } else if (strcmp(key, "lua_heartbeat") == 0) {
-            if (Cfg().lua_heartbeat) Lua::InstallHeartbeatAll();
-        } else if (strcmp(key, "debug") == 0) {
-            Log::SetDebug(Cfg().debug);
-        } else if (strcmp(key, "profile") == 0) {
-            Profile::SetEnabled(Cfg().profile);
-        } else if (strcmp(key, "profile_window") == 0) {
-            if (Cfg().profile_window < 0) Cfg().profile_window = 0;
-        } else if (strcmp(key, "phys_hook_ms") == 0) {
-            if (Cfg().phys_hook_ms < 20) Cfg().phys_hook_ms = 20;
-        } else if (strcmp(key, "report_debounce") == 0) {
-            if (Cfg().report_debounce_sec < 0) Cfg().report_debounce_sec = 0;
-        } else if (strcmp(key, "hang_map_samples") == 0) {
-            if (Cfg().hang_map_samples < 1) Cfg().hang_map_samples = 1;
-            if (Cfg().hang_map_samples > 64) Cfg().hang_map_samples = 64;
-        } else if (strcmp(key, "hang_map_interval_ms") == 0) {
-            if (Cfg().hang_map_interval_ms < 1) Cfg().hang_map_interval_ms = 1;
-            if (Cfg().hang_map_interval_ms > 5000) Cfg().hang_map_interval_ms = 5000;
-        } else if (strcmp(key, "phys_resolve_delay") == 0) {
-            if (Cfg().phys_resolve_delay < 0) Cfg().phys_resolve_delay = 0;
-        }
-
+        CfgPostWrite(key);
         return 0;
     }
 
@@ -1122,17 +1146,24 @@ namespace CrashCapture {
         return 2;
     }
 
-    static int cc_lua_dump(lua_State* L)
+    static bool DumpDebounced(const char* source)
     {
         uint64_t now = MonotonicMs();
         int deb = Cfg().report_debounce_sec;
         static uint64_t lastDumpMs = 0;
         if (deb > 0 && lastDumpMs && (now - lastDumpMs) < (uint64_t)deb * 1000ull) {
             Log::Str("[Crash Capture] dump: suppressed (debounced).\n");
-            return 0;
+            return false;
         }
         lastDumpMs = now;
-        Platform::DumpThread("dump", "manual dump requested (LUA)");
+        Platform::DumpThread("dump", source);
+        return true;
+    }
+
+    static int cc_lua_dump(lua_State* L)
+    {
+        (void)L;
+        DumpDebounced("manual dump requested (LUA)");
         return 0;
     }
 
@@ -1542,6 +1573,14 @@ namespace CrashCapture {
         return 1;
     }
 
+    static ProfileView ProfileSnapshotClamped(int limit, const ProfileBucket** bucketsOut)
+    {
+        static ProfileBucket snap[64];
+        if (limit <= 0 || limit > 64) limit = 64;
+        if (bucketsOut) *bucketsOut = snap;
+        return Profile::Snapshot(snap, limit);
+    }
+
     static int cc_lua_profile(lua_State* L)
     {
         ILuaInterface* l = IfaceForState(L);
@@ -1550,10 +1589,9 @@ namespace CrashCapture {
         int limit = 20;
         if (g_api.ok && g_api.gettop(L) >= 1 && g_api.type(L, 1) == CC_LT_NUM)
             limit = (int)g_api.tonumber(L, 1);
-        if (limit <= 0 || limit > 64) limit = 64;
 
-        static ProfileBucket snap[64];
-        ProfileView v = Profile::Snapshot(snap, limit);
+        const ProfileBucket* snap = NULL;
+        ProfileView v = ProfileSnapshotClamped(limit, &snap);
 
         l->CreateTable();
         l->PushNumber(v.windowMs); l->SetField(-2, "window_ms");
@@ -1637,6 +1675,259 @@ namespace CrashCapture {
         return 3;
     }
 
+    // --------- console-commands ---
+
+    struct CCConArgs {
+        int argc;
+        const char** argv;
+        const char* Arg(int i) const { return (argv && i >= 0 && i < argc && argv[i]) ? argv[i] : ""; }
+    };
+
+    static bool ConArgBool(const char* v)
+    {
+        return atoi(v) != 0 || strcmp(v, "true") == 0;
+    }
+
+    static void FormatSetting(const CfgEntry* e, char* out, size_t outsz)
+    {
+        switch (e->kind) {
+            case CK_INT: snprintf(out, outsz, "%d", *(int*)e->ptr); break;
+            case CK_BOOL: snprintf(out, outsz, "%s", *(bool*)e->ptr ? "true" : "false"); break;
+            case CK_STR: snprintf(out, outsz, "%s", (const char*)e->ptr); break;
+        }
+    }
+
+    static bool ConCmdAllowed()
+    {
+        return !ClientRealmGate(LuaState::CLIENT) || LiveRealm(LuaState::CLIENT) == NULL;
+    }
+
+    static void ConCmdRefused(const char* name)
+    {
+        Log::Notice("[Crash Capture] %s refused: the client realm is isolated, a connected server must not be able to trigger it\n", name);
+    }
+
+    static void cc_cmd_help(const CCommand&);
+    static void cc_cmd_dump(const CCommand&);
+    static void cc_cmd_set(const CCommand&);
+    static void cc_cmd_get(const CCommand&);
+    static void cc_cmd_pulse(const CCommand&);
+    static void cc_cmd_trace(const CCommand&);
+    static void cc_cmd_frametime(const CCommand&);
+    static void cc_cmd_profile(const CCommand&);
+    static void cc_cmd_profile_reset(const CCommand&);
+    static void cc_cmd_patches(const CCommand&);
+    static void cc_cmd_patch(const CCommand&);
+
+    struct ConCmdEntry {
+        const char* name;
+        const char* help;
+        void (*fn)(const CCommand&);
+    };
+
+    static const ConCmdEntry kConCmds[] = {
+        {"cc_help", "list Crash Capture console commands", cc_cmd_help},
+        {"cc_dump", "cc_dump [reason] - write a Crash Capture report now", cc_cmd_dump},
+        {"cc_set", "cc_set <key> <value> - change a Crash Capture setting", cc_cmd_set},
+        {"cc_get", "cc_get [key] - read a Crash Capture setting, or list all", cc_cmd_get},
+        {"cc_pulse", "feed the Crash Capture freeze heartbeat", cc_cmd_pulse},
+        {"cc_trace", "native backtrace of the current thread", cc_cmd_trace},
+        {"cc_frametime", "per-frame timing metrics", cc_cmd_frametime},
+        {"cc_profile", "cc_profile [limit] - Lua call profiler results", cc_cmd_profile},
+        {"cc_profile_reset", "zero the Lua profiler counters", cc_cmd_profile_reset},
+        {"cc_patches", "list the compiled-in engine patches", cc_cmd_patches},
+        {"cc_patch", "cc_patch <id> [0|1] - enable/disable an engine patch", cc_cmd_patch},
+    };
+
+    static void cc_cmd_help(const CCommand& cmd)
+    {
+        (void)cmd;
+        Log::Notice("[Crash Capture] console commands:\n");
+        for (size_t i = 0; i < sizeof(kConCmds) / sizeof(kConCmds[0]); ++i)
+            Log::Notice("  %s - %s\n", kConCmds[i].name, kConCmds[i].help);
+    }
+
+    static void cc_cmd_dump(const CCommand& cmd)
+    {
+        if (!ConCmdAllowed()) { ConCmdRefused("cc_dump"); return; }
+        const CCConArgs& a = *(const CCConArgs*)&cmd;
+        char reason[192];
+        if (a.argc >= 2 && a.Arg(1)[0])
+            snprintf(reason, sizeof(reason), "manual dump: %s", a.Arg(1));
+        else
+            snprintf(reason, sizeof(reason), "manual dump requested (console)");
+        DumpDebounced(reason);
+    }
+
+    static void cc_cmd_set(const CCommand& cmd)
+    {
+        if (!ConCmdAllowed()) { ConCmdRefused("cc_set"); return; }
+        const CCConArgs& a = *(const CCConArgs*)&cmd;
+        if (a.argc < 3) { Log::Notice("[Crash Capture] usage: cc_set <key> <value>\n"); return; }
+        const char* key = a.Arg(1);
+        const char* val = a.Arg(2);
+
+        if (strcmp(key, "disable") == 0) {
+            ApplyDisable(ConArgBool(val));
+            Log::Notice("[Crash Capture] disable = %s\n", g_luaDisabled ? "true" : "false");
+            return;
+        }
+
+        CfgEntry buf[32];
+        const CfgEntry* e = FindCfg(key, buf);
+        if (!e) { Log::Notice("[Crash Capture] unknown setting '%s' (cc_get lists them)\n", key); return; }
+        if (e->envOnly) { Log::Notice("[Crash Capture] '%s' is launch-config only (crashcapture.cfg / environment)\n", key); return; }
+
+        switch (e->kind) {
+            case CK_INT: *(int*)e->ptr = atoi(val); break;
+            case CK_BOOL: *(bool*)e->ptr = ConArgBool(val); break;
+            case CK_STR: snprintf((char*)e->ptr, e->cap, "%s", val); break;
+        }
+        CfgPostWrite(key);
+
+        char shown[512];
+        FormatSetting(e, shown, sizeof(shown));
+        Log::Notice("[Crash Capture] %s = %s\n", key, shown);
+    }
+
+    static void cc_cmd_get(const CCommand& cmd)
+    {
+        const CCConArgs& a = *(const CCConArgs*)&cmd;
+
+        if (a.argc >= 2 && a.Arg(1)[0]) {
+            const char* key = a.Arg(1);
+            char val[512];
+            if (strcmp(key, "disable") == 0) {
+                snprintf(val, sizeof(val), "%s", g_luaDisabled ? "true" : "false");
+            } else {
+                CfgEntry buf[32];
+                const CfgEntry* e = FindCfg(key, buf);
+                if (!e) { Log::Notice("[Crash Capture] unknown setting '%s'\n", key); return; }
+                FormatSetting(e, val, sizeof(val));
+            }
+            Log::Notice("[Crash Capture] %s = %s\n", key, val);
+            return;
+        }
+
+        Log::Notice("[Crash Capture] settings:\n");
+        CfgEntry buf[32];
+        int n = BuildCfgTable(buf);
+        for (int i = 0; i < n; ++i) {
+            char val[512];
+            FormatSetting(&buf[i], val, sizeof(val));
+            Log::Notice("  %s = %s%s\n", buf[i].key, val, buf[i].envOnly ? " (launch-config only)" : "");
+        }
+        Log::Notice("  disable = %s\n", g_luaDisabled ? "true" : "false");
+    }
+
+    static void cc_cmd_pulse(const CCommand& cmd)
+    {
+        if (!ConCmdAllowed()) { ConCmdRefused("cc_pulse"); return; }
+        (void)cmd;
+        CrashCapture::Pulse();
+        Log::Notice("[Crash Capture] pulse fed.\n");
+    }
+
+    static void cc_cmd_trace(const CCommand& cmd)
+    {
+        (void)cmd;
+        uintptr_t pcs[64];
+        int n = Platform::Backtrace(NULL, pcs, 64);
+        Log::Notice("[Crash Capture] native backtrace (%d frame%s):\n", n, n == 1 ? "" : "s");
+        for (int i = 0; i < n; ++i) {
+            char buf[512];
+            FormatAddress(pcs[i], buf, sizeof(buf));
+            Log::Notice("  #%-2d %s\n", i, buf);
+        }
+    }
+
+    static void cc_cmd_frametime(const CCommand& cmd)
+    {
+        (void)cmd;
+        EngineFrameStats s;
+        if (!Engine::FrameStats(&s)) {
+            Log::Notice("[Crash Capture] frametime: no samples (frame_profile is off)\n");
+            return;
+        }
+        Log::Notice("[Crash Capture] frame: work %.2fms, sleep %.2fms, total %.2fms (%.1f%% load), %llu frame(s)\n",
+                    s.work_ms, s.sleep_ms, s.total_ms, s.load_pct, (unsigned long long)s.frames);
+        Log::Notice("[Crash Capture] average: work %.2fms, total %.2fms\n", s.avg_work_ms, s.avg_total_ms);
+        if (s.phys_ticks)
+            Log::Notice("[Crash Capture] physics: %.2fms last tick, %.2fms avg, %llu tick(s), %llu call(s)\n",
+                        s.phys_ms, s.avg_phys_ms, (unsigned long long)s.phys_ticks, (unsigned long long)s.phys_calls);
+    }
+
+    static void cc_cmd_profile(const CCommand& cmd)
+    {
+        const CCConArgs& a = *(const CCConArgs*)&cmd;
+        int limit = 20;
+        if (a.argc >= 2 && a.Arg(1)[0]) limit = atoi(a.Arg(1));
+
+        const ProfileBucket* snap = NULL;
+        ProfileView v = ProfileSnapshotClamped(limit, &snap);
+        Log::Notice("[Crash Capture] profiler: %.0fms window, %d bucket(s)%s\n",
+                    v.windowMs, v.count, v.previous ? " (previous window)" : "");
+        for (int i = 0; i < v.count; ++i) {
+            const ProfileBucket& b = snap[i];
+            Log::Notice("  %-40s %-8s %6llu call(s)  self %8.2fms  total %8.2fms  p99 %8.2fms  max %8.2fms\n",
+                        b.name, Profile::KindName(b.kind), (unsigned long long)b.calls,
+                        b.selfMs, b.totalMs, b.p99Ms, b.maxMs);
+        }
+    }
+
+    static void cc_cmd_profile_reset(const CCommand& cmd)
+    {
+        if (!ConCmdAllowed()) { ConCmdRefused("cc_profile_reset"); return; }
+        (void)cmd;
+        Profile::Rotate();
+        Log::Notice("[Crash Capture] profiler counters reset.\n");
+    }
+
+    static void cc_cmd_patches(const CCommand& cmd)
+    {
+        (void)cmd;
+        int n = Patch::Count();
+        Log::Notice("[Crash Capture] %d engine patch(es):\n", n);
+        for (int i = 0; i < n; ++i) {
+            CCPatchInfo info;
+            if (!Patch::GetInfo(i, &info)) continue;
+            char at[40] = "";
+            if (info.addr) snprintf(at, sizeof(at), " @ 0x%llx", (unsigned long long)info.addr);
+            Log::Notice("  %-40s %-11s %s%s\n", info.id, PatchStateName(info.state),
+                        info.enabled ? "enabled" : "disabled", at);
+        }
+    }
+
+    static void cc_cmd_patch(const CCommand& cmd)
+    {
+        if (!ConCmdAllowed()) { ConCmdRefused("cc_patch"); return; }
+        const CCConArgs& a = *(const CCConArgs*)&cmd;
+        if (a.argc < 2) { Log::Notice("[Crash Capture] usage: cc_patch <id> [0|1]\n"); return; }
+        const char* id = a.Arg(1);
+        bool on = true;
+        if (a.argc >= 3 && a.Arg(2)[0]) on = ConArgBool(a.Arg(2));
+
+        bool persisted = false;
+        CCPatchToggle r = Patch::Queue(id, on, &persisted);
+        Log::Notice("[Crash Capture] patch '%s': %s%s\n", id, PatchToggleName(r),
+                    persisted ? " (saved to patch state)" : "");
+    }
+
+    static bool g_conCmdsInstalled = false;
+
+    void Lua::InstallConCommands(void* iface)
+    {
+        if (g_conCmdsInstalled || !RealmTableOwned()) return;
+        ILuaInterface* L = (ILuaInterface*)iface;
+        if (!Lua::IfaceLive(L)) return;
+
+        for (size_t i = 0; i < sizeof(kConCmds) / sizeof(kConCmds[0]); ++i)
+            L->CreateConCommand(kConCmds[i].name, kConCmds[i].help, 0, kConCmds[i].fn, NULL);
+
+        g_conCmdsInstalled = true;
+        Log::Debug("[CC-LUA] %d console command(s) registered\n", (int)(sizeof(kConCmds) / sizeof(kConCmds[0])));
+    }
+
     // --------- lua-bootstrap (sideload) ---
     typedef int (*Fn_lua_pcall)(lua_State*, int, int, int);
     static Fn_lua_pcall o_lua_pcall = 0;
@@ -1674,6 +1965,7 @@ namespace CrashCapture {
         if (!Lua::IfaceLive(L)) return;
 
         int r = RealmOf(L);
+        if (ClientRealmIsolated(r)) return;
         if (r >= 0) {
             if (g_apiInstalled[r]) return;
             g_realm[r] = L;
@@ -1724,6 +2016,8 @@ namespace CrashCapture {
             if (!Lua::IfaceLive(l)) { ClearRealm(r); continue; }
 
             if (l != g_realm[r]) { ClearRealm(r); g_realm[r] = l; }
+
+            Lua::InstallConCommands(l);
 
             void* st = (void*)l->GetState();
             if (st && st != g_apiState[r]) {

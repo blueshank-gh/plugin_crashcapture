@@ -306,6 +306,7 @@ namespace CrashCapture {
         if (c.profile_window < 0) c.profile_window = 0;
         c.memapi = EnvInt("CRASHCAPTURE_MEMAPI", 0) != 0;
         c.patches = EnvInt("CRASHCAPTURE_PATCHES", 1) != 0;
+        c.client_lua = EnvInt("CRASHCAPTURE_CLIENT_LUA", 0) != 0;
 
         // store crashes in <gmod-root>/crashes
         const char* dir = CfgRaw("CRASHCAPTURE_DIR");
