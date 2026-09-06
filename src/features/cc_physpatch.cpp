@@ -220,6 +220,42 @@ namespace CrashCapture {
         return o_ttgmf(mindist, a2, a3, a4, a5);
     }
 
+    // --- gm.phys.mindist_event_illegal (PATCH_DETOUR) ---
+    typedef int (*Fn_nei)(void*);
+    static Fn_nei o_nei = 0;
+
+    #if defined(CC_X86)
+        static const int kNeiSolverRead = 0x40;
+        static const int kNeiMindist = 0x20; // IVP_Mindist_Event_Solver -> mindist
+        static const int kNeiEvent = 0x38; // -> out: scheduled event (null = none)
+    #elif defined(CC_X64)
+        static const int kNeiSolverRead = 0x40;
+        static const int kNeiMindist = 0x10;
+        static const int kNeiEvent = 0x30;
+    #else
+        static const int kNeiSolverRead = 0, kNeiMindist = 0, kNeiEvent = 0;
+    #endif
+
+    static int h_nei(void* solver)
+    {
+        void* mindist = NULL;
+        if (solver && Mem::IsReadable(solver, kNeiSolverRead)) {
+            mindist = *(void**)((char*)solver + kNeiMindist);
+            *(void**)((char*)solver + kNeiEvent) = NULL;
+        }
+        if (mindist && !Phys::Recover::MindistObjectsLive(mindist)) {
+            Log::Debug("[CC-PATCH] next_event_illegal skipped: mindist 0x%lx references a stale object\n",
+                    (unsigned long)(uintptr_t)mindist);
+        } else if (mindist && Phys::Recover::MindistObjectsNaN(mindist)) {
+            Log::Debug("[CC-PATCH] next_event_illegal skipped: mindist 0x%lx object position is NaN\n",
+                    (unsigned long)(uintptr_t)mindist);
+        } else {
+            Log::Debug("[CC-PATCH] next_event_illegal skipped: illegal sort pair (mindist 0x%lx)\n",
+                    (unsigned long)(uintptr_t)mindist);
+        }
+        return 0;
+    }
+
     // --- gm.phys.ovtree_hash_remove (PATCH_DETOUR) ---
     struct VHashArgs { void* hash; const void* elem; unsigned idx; bool present; };
     static void VHashFindInner(void* arg)
@@ -597,6 +633,24 @@ namespace CrashCapture {
                 true, false, false,
             },
             {
+                "gm.phys.mindist_event_illegal",
+                "gmod IVP illegal event-dispatch fatal",
+                "next_event_illegal returns with no event scheduled instead of Error() when the mindist sort pair has no solver entry",
+                CC_PATCH_DETOUR,
+                {"patch.next_event_illegal", "vphysics",
+                    "_ZN24IVP_Mindist_Event_Solver18next_event_illegalEPS_",
+                    "55 89 E5 83 EC 0C 68 EA 04 00 00 68 ?? ?? ?? ?? 68 ?? ?? ?? ?? E8",
+                    {{CC_STEP_END, 0, 0}}},
+                0,
+                {0x55,0x89,0xE5,0x83,0xEC,0x0C,0x68,0xEA,0x04,0x00,0x00},
+                {1,1,1,1,1,1,1,1,1,1,1},
+                {0},
+                11,
+                (void*)h_nei,
+                (void**)&o_nei,
+                true, false, false,
+            },
+            {
                 "gm.phys.friction_stale_mindist",
                 "gmod IVP retained-mindist UAF",
                 "skip try_to_generate_managed_friction when the retained mindist references a stale or NaN-position object",
@@ -867,6 +921,23 @@ namespace CrashCapture {
                 24,
                 (void*)h_ff,
                 (void**)&o_ff,
+                true, false, false,
+            },
+            {
+                "gm.phys.mindist_event_illegal",
+                "gmod IVP illegal event-dispatch fatal",
+                "next_event_illegal returns with no event scheduled instead of Error() when the mindist sort pair has no solver entry",
+                CC_PATCH_DETOUR,
+                {"patch.next_event_illegal", "vphysics", NULL,
+                    "55 BA EA 04 00 00 31 C0 48 8D 35 ?? ?? ?? ?? 48 89 E5 5D 48 8D 3D ?? ?? ?? ?? E9",
+                    {{CC_STEP_END, 0, 0}}},
+                0,
+                {0x55,0xBA,0xEA,0x04,0x00,0x00,0x31,0xC0},
+                {1,1,1,1,1,1,1,1},
+                {0},
+                8,
+                (void*)h_nei,
+                (void**)&o_nei,
                 true, false, false,
             },
             {
