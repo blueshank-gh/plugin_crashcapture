@@ -830,10 +830,18 @@ namespace CrashCapture {
     }
 
     static const char* g_breakMsg = "Crash Capture: interrupting a suspected infinite loop";
+    static std::atomic<uint64_t> g_breakArmPulse{0};
     static void cc_break_hook(lua_State* L, cc_lua_Debug* /*ar*/)
     {
         if (!Mem::IsReadable(L, sizeof(void*))) { DisarmBreakHook(); return; }
         if (g_api.sethook) g_api.sethook(L, NULL, 0, 0);
+
+        if (g_lastPulseMs != g_breakArmPulse) {
+            DisarmBreakHook();
+            Log::Str("[Crash Capture] loop-break: heartbeat advanced since arming, "
+                     "the stall resolved; hook disarmed without breaking.\n");
+            return;
+        }
 
         RecStr(g_recInfo.method, sizeof(g_recInfo.method), "loopbreak");
         RecStr(g_recInfo.stall,  sizeof(g_recInfo.stall),  StallClassName(g_lastStallClass));
@@ -851,6 +859,7 @@ namespace CrashCapture {
     int Lua::ArmBreakHook()
     {
         if (!g_api.hook_ok) return 0;
+        g_breakArmPulse = g_lastPulseMs.load();
         int armed = 0;
         for (int r = 0; r < 3; ++r) {
             if (r == LuaState::MENU) continue;

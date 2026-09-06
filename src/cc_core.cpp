@@ -678,10 +678,30 @@ namespace CrashCapture {
             AppendInFlight(out, outsz);
             return STALL_LUA_INTERP;
         }
-        if ((!m || strcmp(m->name, "[anon-exec]") == 0) && Mem::IsExecutable(pc)) {
+        if (m && strstr(m->name, "memfd:")) {
             snprintf(out, outsz, "lua (JIT trace / mcode)");
             AppendInFlight(out, outsz);
             return STALL_LUA_JIT;
+        }
+        if ((!m || strcmp(m->name, "[anon-exec]") == 0) && Mem::IsExecutable(pc)) {
+            const char* nm = m ? m->name : "unmapped-exec";
+            PhysScan ps = { ctx, m, false };
+            RunProtectedQuiet(PhysScanFn, &ps);
+            if (ps.hit) { snprintf(out, outsz, "physics (%s)", nm); return STALL_PHYSICS; }
+            LuaScan ls = { ctx, 0 };
+            RunProtectedQuiet(LuaScanFn, &ls);
+            if (ls.state == 1) {
+                snprintf(out, outsz, "lua (interpreter) via %s", nm);
+                AppendInFlight(out, outsz);
+                return STALL_LUA_INTERP;
+            }
+            if (ls.state == 2) {
+                snprintf(out, outsz, "lua (JIT trace / mcode) via %s", nm);
+                AppendInFlight(out, outsz);
+                return STALL_LUA_JIT;
+            }
+            snprintf(out, outsz, "native (%s)", nm);
+            return STALL_NATIVE;
         }
         if (m) {
             PhysScan ps = { ctx, m, false };
