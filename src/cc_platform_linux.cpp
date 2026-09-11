@@ -429,12 +429,157 @@ namespace CrashCapture {
         return s.n;
     }
 
+    static const int kThMax = 128;
+
+    static void ThReadFile(const char* path, char* buf, size_t cap)
+    {
+        buf[0] = 0;
+        int fd = open(path, O_RDONLY);
+        if (fd < 0) return;
+        ssize_t n = read(fd, buf, cap - 1);
+        close(fd);
+        if (n < 0) n = 0;
+        buf[n] = 0;
+    }
+
+    static void ThTrim(char* s)
+    {
+        size_t n = strlen(s);
+        while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == ' ')) s[--n] = 0;
+    }
+
+    static unsigned long ThDec(const char*& p)
+    {
+        while (*p == ' ' || *p == '\t') ++p;
+        unsigned long v = 0;
+        while (*p >= '0' && *p <= '9') { v = v * 10 + (unsigned long)(*p - '0'); ++p; }
+        return v;
+    }
+
+    static unsigned long ThHex(const char*& p)
+    {
+        while (*p == ' ' || *p == '\t') ++p;
+        if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+        unsigned long v = 0;
+        for (;;) {
+            char c = *p;
+            int d;
+            if (c >= '0' && c <= '9')      d = c - '0';
+            else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+            else break;
+            v = v * 16 + (unsigned long)d;
+            ++p;
+        }
+        return v;
+    }
+
+    struct ThJob { int tid; bool self; bool game; };
+
+    static void ThJobFn(void* p)
+    {
+        ThJob* j = (ThJob*)p;
+        char path[64];
+        char name[32];
+        char stat[512];
+        char wchan[64];
+        char sysc[256];
+        char kern[640];
+
+        snprintf(path, sizeof(path), "/proc/self/task/%d/comm", j->tid);
+        ThReadFile(path, name, sizeof(name));
+        ThTrim(name);
+
+        snprintf(path, sizeof(path), "/proc/self/task/%d/stat", j->tid);
+        ThReadFile(path, stat, sizeof(stat));
+        char st = '?';
+        const char* rp = strrchr(stat, ')');
+        if (rp && rp[1] == ' ' && rp[2]) st = rp[2];
+
+        snprintf(path, sizeof(path), "/proc/self/task/%d/wchan", j->tid);
+        ThReadFile(path, wchan, sizeof(wchan));
+        ThTrim(wchan);
+
+        Log::F("tid %d %s%s \"%s\" state=%c", j->tid,
+               j->game ? "*" : " ", j->self ? "@" : " ",
+               name[0] ? name : "?", st);
+        if (wchan[0] && strcmp(wchan, "0") != 0) Log::F(" wchan=%s", wchan);
+        Log::Str("\n");
+
+        if (j->self) { Log::Str("  <this thread wrote the report>\n\n"); return; }
+
+        snprintf(path, sizeof(path), "/proc/self/task/%d/syscall", j->tid);
+        ThReadFile(path, sysc, sizeof(sysc));
+
+        if (sysc[0] >= '0' && sysc[0] <= '9') {
+            const char* p = sysc;
+            unsigned long nr = ThDec(p);
+            unsigned long a0 = ThHex(p), a1 = ThHex(p), a2 = ThHex(p), a3 = ThHex(p);
+            ThHex(p); ThHex(p);
+            unsigned long sp = ThHex(p);
+            unsigned long pc = ThHex(p);
+            Log::F("  syscall %lu a0=0x%lx a1=0x%lx a2=0x%lx a3=0x%lx\n",
+                   nr, a0, a1, a2, a3);
+            char f[512];
+            FormatAddress((uintptr_t)pc, f, sizeof(f));
+            Log::F("  sp=0x%lx pc=0x%lx %s\n", sp, pc, f);
+        } else {
+            Log::Str("  running (no syscall context)\n");
+        }
+
+        snprintf(path, sizeof(path), "/proc/self/task/%d/stack", j->tid);
+        ThReadFile(path, kern, sizeof(kern));
+        if (kern[0] == '[') {
+            Log::Str("  kernel stack:\n");
+            int lines = 0;
+            for (char* q = kern; *q && lines < 6; ++lines) {
+                char* e = strchr(q, '\n');
+                if (e) *e = 0;
+                Log::F("    %s\n", q);
+                if (!e) break;
+                q = e + 1;
+            }
+        }
+        Log::Str("\n");
+    }
+
+    void Report::Threads(void*)
+    {
+        DIR* d = opendir("/proc/self/task");
+        if (!d) { Log::Str("  <cannot read /proc/self/task>\n"); return; }
+
+        int total = 0;
+        struct dirent* e;
+        while ((e = readdir(d)) != NULL) {
+            if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+            ++total;
+        }
+
+        Log::F("threads: %d", total);
+        if (total > kThMax) Log::F(" (showing first %d)", kThMax);
+        Log::Str("\nmarks: * = game thread, @ = this thread wrote the report\n\n");
+
+        int self = (int)syscall(SYS_gettid);
+        int shown = 0;
+        rewinddir(d);
+        while ((e = readdir(d)) != NULL && shown < kThMax) {
+            if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+            ThJob j = { atoi(e->d_name),
+                        atoi(e->d_name) == self,
+                        g_gameThreadTid != 0 && atoi(e->d_name) == g_gameThreadTid };
+            RunProtectedQuiet(ThJobFn, &j);
+            ++shown;
+        }
+        closedir(d);
+    }
+
     // --------- linux-section-adapters ---
 
     static void* g_curCtx = NULL;
     static void Sec_Registers(void*) { Report::Registers(g_curCtx); }
     static void Sec_Stack(void*) { Report::NativeStack(g_curCtx); }
     static void Sec_StackScan(void*) { Report::StackScan(g_curCtx); }
+    static void Sec_Threads(void*) { Report::Threads(NULL); }
     static void Sec_Lua(void*) { Lua::Dump(); }
     static void Sec_Modules(void*) { Modules::Dump(); }
     static void Sec_EngineFrame(void*) { Engine::ReportFrameProfile(); Profile::ReportSection(); }
@@ -490,6 +635,8 @@ namespace CrashCapture {
         Report::Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
         if (HangMap::Count() > 0)
             Report::Section("Hang map", HangMap::Section, NULL, true);
+        if (Cfg().threads)
+            Report::Section("Threads", Sec_Threads, NULL, true);
         Report::Section("Lua", Sec_Lua, NULL, false);
         Report::Section("Modules", Sec_Modules, NULL, false);
         if (Patch::Count() > 0)

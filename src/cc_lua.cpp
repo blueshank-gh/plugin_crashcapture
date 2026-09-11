@@ -1009,6 +1009,7 @@ namespace CrashCapture {
         t[n++] = {"hang_map", CK_BOOL, &c.hang_map, 0, false};
         t[n++] = {"hang_map_samples", CK_INT, &c.hang_map_samples, 0, false};
         t[n++] = {"hang_map_interval_ms", CK_INT, &c.hang_map_interval_ms, 0, false};
+        t[n++] = {"threads", CK_BOOL, &c.threads, 0, false};
         t[n++] = {"firstchance", CK_BOOL, &c.firstchance, 0, false};
         t[n++] = {"window_watchdog", CK_BOOL, &c.window_watchdog, 0, false};
         t[n++] = {"lua_heartbeat", CK_BOOL, &c.lua_heartbeat, 0, false};

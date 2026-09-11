@@ -42,7 +42,7 @@
     #define CC_SIDE "client"
 #endif
 
-#define CC_VERSION "1.5.1"
+#define CC_VERSION "1.5.2"
 #define CC_BUILD __DATE__ " " __TIME__
 
 namespace CrashCapture {
@@ -76,6 +76,7 @@ namespace CrashCapture {
         int profile_window;   // CRASHCAPTURE_PROFILE_WINDOW
         bool memapi;          // CRASHCAPTURE_MEMAPI
         bool patches;         // CRASHCAPTURE_PATCHES
+        bool threads;         // CRASHCAPTURE_THREADS
         bool client_lua;      // CRASHCAPTURE_CLIENT_LUA
         char dir[512];        // CRASHCAPTURE_DIR
         char script[512];     // CRASHCAPTURE_SCRIPT
@@ -268,6 +269,7 @@ namespace CrashCapture {
         void Registers(void* ctx);
         void NativeStack(void* ctx);
         void StackScan(void* ctx);
+        void Threads(void* ctx);
         const char* Meme();
         void Header(const char* kind, const char* reason);
         void Banner(const char* kind, const char* reason, const char* reportPath); // console-only banner; NULL path = no "report :" line

@@ -228,12 +228,165 @@ namespace CrashCapture {
         return n;
     }
 
+    static const int kThMax = 128;
+    static const int kThFrames = 24;
+    enum ThFail { TH_OK = 0, TH_NOACCESS, TH_NOSUSPEND, TH_NOCTX };
+
+    struct ThSnap {
+        unsigned tid;
+        bool current;
+        bool game;
+        int fail;
+        char name[48];
+        uintptr_t gr[16];
+        uintptr_t pc;
+        int nframes;
+        uintptr_t frames[kThFrames];
+    };
+    static ThSnap g_thSnap[kThMax];
+    static int g_thShown = 0;
+
+    static void ThStoreCtx(ThSnap* t, CONTEXT* cc)
+    {
+        #if defined(CC_X64)
+            t->pc = (uintptr_t)cc->Rip;
+            t->gr[0] = cc->Rax;  t->gr[1] = cc->Rbx;  t->gr[2] = cc->Rcx;  t->gr[3] = cc->Rdx;
+            t->gr[4] = cc->Rsi;  t->gr[5] = cc->Rdi;  t->gr[6] = cc->R8;   t->gr[7] = cc->R9;
+            t->gr[8] = cc->R10;  t->gr[9] = cc->R11;  t->gr[10] = cc->R12; t->gr[11] = cc->R13;
+            t->gr[12] = cc->R14; t->gr[13] = cc->R15; t->gr[14] = cc->Rbp; t->gr[15] = cc->Rsp;
+        #else
+            t->pc = (uintptr_t)cc->Eip;
+            t->gr[0] = cc->Eax; t->gr[1] = cc->Ebx; t->gr[2] = cc->Ecx; t->gr[3] = cc->Edx;
+            t->gr[4] = cc->Esi; t->gr[5] = cc->Edi; t->gr[6] = cc->Esp; t->gr[7] = cc->Ebp;
+        #endif
+        uintptr_t pcs[kThFrames];
+        t->nframes = Platform::Backtrace(cc, pcs, kThFrames);
+        for (int i = 0; i < t->nframes; ++i) t->frames[i] = pcs[i];
+    }
+
+    static void ThSnapOne(void* p)
+    {
+        ThSnap* t = (ThSnap*)p;
+        if (t->current) return;
+
+        HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
+                               FALSE, t->tid);
+        if (!th) { t->fail = TH_NOACCESS; return; }
+
+        if (SuspendThread(th) == (DWORD)-1) { CloseHandle(th); t->fail = TH_NOSUSPEND; return; }
+
+        CONTEXT cc;
+        memset(&cc, 0, sizeof(cc));
+        cc.ContextFlags = CONTEXT_FULL;
+        BOOL ok = GetThreadContext(th, &cc);
+        ResumeThread(th);
+        if (!ok) { CloseHandle(th); t->fail = TH_NOCTX; return; }
+
+        ThStoreCtx(t, &cc);
+
+        typedef HRESULT (WINAPI* PFN_GetThreadDescription)(HANDLE, PWSTR*);
+        static PFN_GetThreadDescription fn = NULL;
+        static bool tried = false;
+        if (!tried) {
+            tried = true;
+            HMODULE k = GetModuleHandleA("kernel32.dll");
+            if (k) fn = (PFN_GetThreadDescription)GetProcAddress(k, "GetThreadDescription");
+        }
+        if (fn) {
+            PWSTR w = NULL;
+            if (SUCCEEDED(fn(th, &w)) && w) {
+                WideCharToMultiByte(CP_UTF8, 0, w, -1, t->name, (int)sizeof(t->name) - 1, NULL, NULL);
+                t->name[sizeof(t->name) - 1] = 0;
+                for (char* q = t->name; *q; ++q)
+                    if ((unsigned char)*q < 32 || (unsigned char)*q > 126) *q = '?';
+                LocalFree(w);
+            }
+        }
+        CloseHandle(th);
+    }
+
+    void Report::Threads(void*)
+    {
+        DWORD pid = GetCurrentProcessId();
+        DWORD self = GetCurrentThreadId();
+        int total = 0;
+        g_thShown = 0;
+        memset(g_thSnap, 0, sizeof(g_thSnap));
+
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap == INVALID_HANDLE_VALUE) { Log::Str("  <thread snapshot failed>\n"); return; }
+
+        THREADENTRY32 te;
+        te.dwSize = sizeof(te);
+        if (Thread32First(snap, &te)) {
+            do {
+                if (te.th32OwnerProcessID != pid) continue;
+                ++total;
+                if (g_thShown >= kThMax) continue;
+                ThSnap& t = g_thSnap[g_thShown++];
+                t.tid = te.th32ThreadID;
+                t.current = (te.th32ThreadID == self);
+                t.game = (g_gameThreadId != 0 && te.th32ThreadID == g_gameThreadId);
+            } while (Thread32Next(snap, &te));
+        }
+        CloseHandle(snap);
+
+        for (int i = 0; i < g_thShown; ++i)
+            RunProtectedQuiet(ThSnapOne, &g_thSnap[i]);
+
+        Log::F("threads: %d", total);
+        if (total > g_thShown) Log::F(" (showing first %d)", g_thShown);
+        Log::Str("\nmarks: * = game thread, @ = this thread wrote the report\n\n");
+
+        char buf[512];
+        for (int i = 0; i < g_thShown; ++i) {
+            ThSnap& t = g_thSnap[i];
+            Log::F("tid %lu %s%s %s\n", (unsigned long)t.tid,
+                   t.game ? "*" : " ", t.current ? "@" : " ",
+                   t.name[0] ? t.name : "");
+            if (t.current) { Log::Str("  <this thread wrote the report>\n\n"); continue; }
+            if (t.fail) {
+                Log::F("  <%s>\n\n",
+                       t.fail == TH_NOACCESS ? "no access" :
+                       t.fail == TH_NOSUSPEND ? "suspend failed" : "context unavailable");
+                continue;
+            }
+            #if defined(CC_X64)
+                static const char* const rn[16] = { "rax", "rbx", "rcx", "rdx", "rsi", "rdi",
+                                                    "r8 ", "r9 ", "r10", "r11", "r12", "r13",
+                                                    "r14", "r15", "rbp", "rsp" };
+                for (int r = 0; r < 16; r += 4) {
+                    Log::F("  %s=%016llx %s=%016llx %s=%016llx %s=%016llx\n",
+                           rn[r],   (unsigned long long)t.gr[r],
+                           rn[r+1], (unsigned long long)t.gr[r+1],
+                           rn[r+2], (unsigned long long)t.gr[r+2],
+                           rn[r+3], (unsigned long long)t.gr[r+3]);
+                }
+            #else
+                Log::F("  eax=%08lx ebx=%08lx ecx=%08lx edx=%08lx\n",
+                       (unsigned long)t.gr[0], (unsigned long)t.gr[1],
+                       (unsigned long)t.gr[2], (unsigned long)t.gr[3]);
+                Log::F("  esi=%08lx edi=%08lx esp=%08lx ebp=%08lx\n",
+                       (unsigned long)t.gr[4], (unsigned long)t.gr[5],
+                       (unsigned long)t.gr[6], (unsigned long)t.gr[7]);
+            #endif
+            FormatAddress(t.pc, buf, sizeof(buf));
+            Log::F("  pc  %s\n", buf);
+            for (int f = 0; f < t.nframes; ++f) {
+                FormatAddress(t.frames[f], buf, sizeof(buf));
+                Log::F("  #%-2d %s\n", f, buf);
+            }
+            Log::Str("\n");
+        }
+    }
+
     // --------- windows-section-adapters ---
 
     static void* g_curCtx = NULL;
     static void Sec_Registers(void*)   { Report::Registers(g_curCtx); }
     static void Sec_Stack(void*)       { Report::NativeStack(g_curCtx); }
     static void Sec_StackScan(void*)   { Report::StackScan(g_curCtx); }
+    static void Sec_Threads(void*)     { Report::Threads(NULL); }
     static void Sec_Lua(void*)         { Lua::Dump(); }
     static void Sec_Modules(void*)     { Modules::Dump(); }
     static void Sec_EngineFrame(void*) { Engine::ReportFrameProfile(); Profile::ReportSection(); }
@@ -246,6 +399,8 @@ namespace CrashCapture {
         Report::Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
         if (HangMap::Count() > 0)
             Report::Section("Hang map", HangMap::Section, NULL, true);
+        if (Cfg().threads)
+            Report::Section("Threads", Sec_Threads, NULL, true);
         Report::Section("Lua",         Sec_Lua,       NULL, false);
         Report::Section("Modules",     Sec_Modules,   NULL, false);
         if (Patch::Count() > 0)
@@ -431,8 +586,10 @@ namespace CrashCapture {
         Report::Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
         if (HangMap::Count() > 0)
             Report::Section("Hang map", HangMap::Section, NULL, true);
+        if (Cfg().threads)
+            Report::Section("Threads", Sec_Threads, NULL, true);
         Report::Section("Lua", Sec_Lua, NULL, false);
-        
+
         if (suspended) ResumeThread(th);
 
         Report::Section("Modules", Sec_Modules, NULL, false);

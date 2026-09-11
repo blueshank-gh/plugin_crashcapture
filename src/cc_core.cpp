@@ -282,6 +282,7 @@ namespace CrashCapture {
         c.hang_map_interval_ms = EnvInt("CRASHCAPTURE_HANG_MAP_INTERVAL_MS", 10);
         if (c.hang_map_interval_ms < 1) c.hang_map_interval_ms = 1;
         if (c.hang_map_interval_ms > 5000) c.hang_map_interval_ms = 5000;
+        c.threads = EnvInt("CRASHCAPTURE_THREADS", 1) != 0;
         c.phys_resolve_delay = EnvInt("CRASHCAPTURE_PHYS_RESOLVE_DELAY", 3);
         if (c.phys_resolve_delay < 0) c.phys_resolve_delay = 0;
         c.phys_defer_eps_us = EnvInt("CRASHCAPTURE_PHYS_DEFER_EPS_US", 0);
