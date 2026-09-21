@@ -42,15 +42,15 @@ namespace CrashCapture {
                 "55 8B EC 8D 45 0C 50 FF 75 08 6A 01 E8 ?? ?? ?? ?? 83 C4 0C 5D C3",
                 {{CC_STEP_END, 0, 0}}},
             {"engine.host_runframe", "engine", NULL,
-                "55 8B EC 83 EC 10 80 3D ?? ?? ?? ?? 00 75 6A 83 3D ?? ?? ?? ?? 02 7C 61 83 3D ?? ?? ?? ?? 06",
+                "55 8B EC 83 EC 10 80 3D ?? ?? ?? ?? 00 75 71 83 3D ?? ?? ?? ?? 02 7C 68 83 3D ?? ?? ?? ?? 06",
                 {{CC_STEP_END, 0, 0}}},
             // &scr_drawloading - cmp scr_drawloading, 0 / jz / call OnLevelLoadingFinished / mov 0 / jmp / mov 1
             {"engine.loading_byte", "engine", NULL,
                 "80 3D ?? ?? ?? ?? 00 74 15 E8 ?? ?? ?? ?? C6 05 ?? ?? ?? ?? 00 EB 07 C6 05 ?? ?? ?? ?? 01",
                 {{CC_STEP_ABS32, 2, 0}, {CC_STEP_END, 0, 0}}},
-            // CBaseClientState::SetSignonState Range-guard cmp edi, 7 + cmp edi,[esi+13Ch]
+            // CBaseClientState::SetSignonState Range-guard cmp edi, 7 + cmp edi,[esi+130h]
             {"client.setsignon", "engine", NULL,
-                "55 8B EC 56 57 8B 7D 08 8B F1 83 FF 07 0F 87 ?? ?? ?? ?? 83 FF 02 7E ?? 3B BE 3C 01 00 00",
+                "55 8B EC 56 57 8B 7D 08 8B F1 83 FF 07 0F 87 ?? ?? ?? ?? 83 FF 02 7E ?? 3B BE 30 01 00 00",
                 {{CC_STEP_END, 0, 0}}},
         #elif defined(CC_WINDOWS) && defined(CC_X64)
             // sig ends past `mov cl, 1` (B1 01) to skip the non-fatal twin.
@@ -58,15 +58,15 @@ namespace CrashCapture {
                 "48 89 4C 24 08 48 89 54 24 10 4C 89 44 24 18 4C 89 4C 24 20 48 83 EC 28 48 8B D1 4C 8D 44 24 38 B1 01 E8 ?? ?? ?? ??",
                 {{CC_STEP_END, 0, 0}}},
             {"engine.host_runframe", "engine", NULL,
-                "48 83 EC 48 80 3D ?? ?? ?? ?? 00 0F 29 7C 24 20 0F 28 F8 48 89 5C 24 40 75 6D 83 3D ?? ?? ?? ?? 02",
+                "48 83 EC 48 80 3D ?? ?? ?? ?? 00 0F 29 7C 24 20 0F 28 F8 48 89 5C 24 40 75 79 83 3D ?? ?? ?? ?? 02",
                 {{CC_STEP_END, 0, 0}}},
             // &scr_drawloading
             {"engine.loading_byte", "engine", NULL,
                 "40 38 35 ?? ?? ?? ?? 74 15 E8 ?? ?? ?? ?? 40 88 35 ?? ?? ?? ?? EB 07 C6 05 ?? ?? ?? ?? 01",
                 {{CC_STEP_REL, 3, 7}, {CC_STEP_END, 0, 0}}},
-            // CBaseClientState::SetSignonState cmp edx,7 range-guard + cmp edx,[rcx+15Ch]
+            // CBaseClientState::SetSignonState cmp edx,7 range-guard + cmp edx,[rcx+14Ch]
             {"client.setsignon", "engine", NULL,
-                "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 41 8B F0 8B FA 48 8B D9 83 FA 07 0F 87 ?? ?? ?? ?? 83 FA 02 7E ?? 3B 91 5C 01 00 00",
+                "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 41 8B F0 8B FA 48 8B D9 83 FA 07 0F 87 ?? ?? ?? ?? 83 FA 02 7E ?? 3B 91 4C 01 00 00",
                 {{CC_STEP_END, 0, 0}}},
         #endif
     };
@@ -212,10 +212,10 @@ namespace CrashCapture {
     #if defined(CC_WINDOWS)
         enum { SIGNON_NONE = 0, SIGNON_FULL = 6 };
         #if defined(CC_X64)
-            static const int kSignonOff = 0x15C;
+            static const int kSignonOff = 0x14C;
             typedef char (*Fn_setsignon)(void* self, int64_t state, uint32_t spawn);
         #else
-            static const int kSignonOff = 0x13C;
+            static const int kSignonOff = 0x130;
             typedef char (__fastcall *Fn_setsignon)(void* self, void* edx, int state, int spawn);
         #endif
         static Fn_setsignon o_setsignon = 0;
