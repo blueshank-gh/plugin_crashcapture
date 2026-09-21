@@ -11,6 +11,7 @@ namespace CrashCapture {
         CC_PATCH_DATA,
         CC_PATCH_DETOUR,
         CC_PATCH_VFUNC,
+        CC_PATCH_CALL,
     };
 
     enum CCPatchState {

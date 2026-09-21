@@ -9,6 +9,7 @@ namespace CrashCapture {
         namespace Patch {
             void Init();
             void RefreshToggles();
+            void CacheDispatchBounds();
             void DeferEpsilonRefire(void* mindist, void* env);
         }
     }

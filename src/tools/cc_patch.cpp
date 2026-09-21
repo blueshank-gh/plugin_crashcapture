@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 #if defined(CC_WINDOWS)
     #define WIN32_LEAN_AND_MEAN
@@ -146,10 +147,23 @@ namespace CrashCapture {
         return CC_PATCH_FAILED;
     }
 
+    static bool BuildCallBytes(const CCPatch* p, uintptr_t addr, unsigned char* out)
+    {
+        if (!p->detour || p->len < 5) return false;
+        const int relOff = p->len - 4; // `E8` at len-5, its rel32 at len-4
+        if (p->bytes[relOff - 1] != 0xE8) return false;
+        int64_t delta = (int64_t)(uintptr_t)p->detour - (int64_t)(addr + (uintptr_t)p->len);
+        if (delta < INT32_MIN || delta > INT32_MAX) return false;
+        memcpy(out, p->bytes, (size_t)p->len);
+        int32_t rel = (int32_t)delta;
+        memcpy(out + relOff, &rel, sizeof(rel));
+        return true;
+    }
+
     static CCPatchState ApplyOne(const CCPatch* p, PatchRec* r)
     {
         if (p->kind == CC_PATCH_DETOUR) return ApplyDetour(p, r);
-        if (p->kind != CC_PATCH_BYTES && p->kind != CC_PATCH_DATA) {
+        if (p->kind != CC_PATCH_BYTES && p->kind != CC_PATCH_DATA && p->kind != CC_PATCH_CALL) {
             Log::Debug("[CC-PATCH] %s: kind %d not supported yet\n", p->id, (int)p->kind);
             return CC_PATCH_UNSUPPORTED;
         }
@@ -167,7 +181,13 @@ namespace CrashCapture {
         if (!UnlockSite(p, addr)) return CC_PATCH_FAILED;
         if (r->state != CC_PATCH_APPLIED)
             memcpy(r->orig, (void*)addr, (size_t)p->len);
-        WriteSite(p, addr);
+        if (p->kind == CC_PATCH_CALL) {
+            unsigned char buf[24];
+            if (!BuildCallBytes(p, addr, buf)) { RelockSite(p, addr); return CC_PATCH_FAILED; }
+            memcpy((void*)addr, buf, (size_t)p->len);
+        } else {
+            WriteSite(p, addr);
+        }
         RelockSite(p, addr);
         return CC_PATCH_APPLIED;
     }

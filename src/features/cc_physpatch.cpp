@@ -37,6 +37,9 @@ namespace CrashCapture {
             {"patch.edge_next_table", "vphysics",
                 "_ZN16IVP_Compact_Edge10next_tableE", NULL,
                 {{CC_STEP_END, 0, 0}}},
+            {"patch.mindist_dispatch", "vphysics", NULL,
+                "F2 0F 11 44 24 04 E8 ?? ?? ?? ?? 58 8B 07 5A 53 57 FF 50 08",
+                {{CC_STEP_END, 0, 0}}},
         #elif defined(CC_X64)
             {"patch.vhash_find", "vphysics", NULL,
                 "5D C3 49 8B 44 24 08",
@@ -65,6 +68,83 @@ namespace CrashCapture {
     typedef int  (*Fn_find_elem)(void*, const void*, unsigned);
     static Fn_remove_elem o_remove_elem = 0;
     static Fn_find_elem o_find_elem = 0;
+
+    // --- gm.phys.mindist_dispatch_guard (PATCH_CALL), linux/x86 only ---
+    // Replace the 8-byte dispatch window with an equivalent call into C:
+    //     pop  edx               ; 5A      <- the displaced `pop edx`
+    //     push ebx               ; 53      <- the displaced `push ebx`
+    //     push edi               ; 57      <- the displaced `push edi`
+    //     call GuardMindistDispatch        <- replaces `mov eax,[edi]` + `call [eax+8]`
+    #if defined(CC_X86)
+        typedef void (*Fn_dispatch)(void*, void*);
+        static uintptr_t g_dispImgLo = 0, g_dispImgHi = 0, g_dispExecLo = 0, g_dispExecHi = 0;
+        static bool g_dispBoundsFailed = false;
+        static volatile uint32_t g_dispSkips = 0;
+        static volatile uintptr_t g_dispLastObj = 0, g_dispLastVptr = 0;
+
+        // Cache the vphysics image bounds once.
+        static void CacheDispatchBoundsImpl()
+        {
+            if (g_dispImgLo || g_dispBoundsFailed) return;
+            const CCModule* m = Modules::FindByName("vphysics");
+            if (!m) return; // vphysics not mapped yet; try again next time
+            size_t imgSpan = 0;
+            uintptr_t imgLo = Modules::FileExtent(m, &imgSpan);
+            if (!imgLo || imgSpan < 12) { g_dispBoundsFailed = true; return; }
+
+            // the patch site must be inside the exec range we just computed.
+            uintptr_t anchor = Sig::Get("patch.mindist_dispatch");
+            if (!anchor) return;
+            uintptr_t site = anchor + 0xC;
+            if (site < m->base || site >= m->base + m->size) {
+                g_dispBoundsFailed = true;
+                Log::Debug("[CC-PATCH] mindist dispatch guard: vphysics bounds unusable, guard disabled\n");
+                return;
+            }
+
+            g_dispImgLo = imgLo;
+            g_dispImgHi = imgLo + imgSpan;
+            g_dispExecLo = m->base; // r-xp range only
+            g_dispExecHi = m->base + m->size;
+        }
+
+        // entered with the dispatcher's outgoing args already on the stack ([esp]=obj, [esp+4]=env)
+        static void GuardMindistDispatch(void* obj, void* env)
+        {
+            if (!g_dispImgLo) CacheDispatchBoundsImpl();
+
+            uintptr_t vptr = (uintptr_t)*(uint32_t*)obj; // safe: the original read this too
+
+            if (!g_dispImgLo) {
+                uintptr_t target = (uintptr_t)*(uint32_t*)(vptr + 8);
+                ((Fn_dispatch)target)(obj, env);
+                return;
+            }
+
+            bool dispatchable = false;
+            uintptr_t target = 0;
+            if (vptr >= g_dispImgLo && vptr <= g_dispImgHi - 12) {
+                target = (uintptr_t)*(uint32_t*)(vptr + 8);
+                dispatchable = target >= g_dispExecLo && target < g_dispExecHi;
+            }
+
+            if (dispatchable) {
+                ((Fn_dispatch)target)(obj, env);
+                return;
+            }
+
+            uint32_t n = ++g_dispSkips;
+            g_dispLastObj = (uintptr_t)obj;
+            g_dispLastVptr = vptr;
+            if (n <= 8)
+                Log::Debug("[CC-PATCH] mindist dispatch: skipped stale event (obj=0x%lx vptr=0x%lx)\n",
+                           (unsigned long)(uintptr_t)obj, (unsigned long)vptr);
+        }
+
+        void Phys::Patch::CacheDispatchBounds() { CacheDispatchBoundsImpl(); }
+    #else
+        void Phys::Patch::CacheDispatchBounds() {}
+    #endif
 
     #if defined(CC_X86)
         static const int kRfcEnvOffset = 0xC; // IVP_Core->environment
@@ -869,6 +949,25 @@ namespace CrashCapture {
                 (void**)&o_store_remove,
                 false, false, false,
             },
+            {
+                "gm.phys.mindist_dispatch_guard",
+                "gmod IVP time-event UAF (freed/recycled min-list event)",
+                "validate the dispatched event's vtable at the drain-loop virtual call; skip the stale event",
+                CC_PATCH_CALL,
+                {"patch.mindist_dispatch", "vphysics", NULL,
+                    "F2 0F 11 44 24 04 E8 ?? ?? ?? ?? 58 8B 07 5A 53 57 FF 50 08",
+                    {{CC_STEP_END, 0, 0}}},
+                0xC, // anchor(0x104c96) + 0xC = the dispatch window (0x104ca2)
+                {0x8B,0x07,0x5A,0x53,0x57,0xFF,0x50,0x08},
+                {1,1,1,1,1,1,1,1},
+                {0x5A,0x53,0x57,0xE8,0x00,0x00,0x00,0x00},
+                8,
+                (void*)GuardMindistDispatch,
+                NULL,
+                true,   // default_on: proven crash fix, same class as the other gm.phys UAF patches
+                false,  // hot_safe: reachable from the physics thread, no live toggle
+                false,
+            },
         #elif defined(CC_X64)
             {
                 "gm.phys.contact_stale_core",
@@ -1224,6 +1323,7 @@ namespace CrashCapture {
         g_minlistBoundB = CrashCapture::Patch::Enabled("gm.phys.minlist_walk_bound_b");
         g_minListMalloc = Sig::Get("patch.p_malloc");
         g_minListFree = Sig::Get("patch.p_free");
+        Phys::Patch::CacheDispatchBounds();
     }
 }
 
@@ -1232,6 +1332,7 @@ namespace CrashCapture {
 namespace CrashCapture {
     void Phys::Patch::Init() {}
     void Phys::Patch::RefreshToggles() {}
+    void Phys::Patch::CacheDispatchBounds() {}
     void Phys::Patch::DeferEpsilonRefire(void*, void*) {}
 }
 
