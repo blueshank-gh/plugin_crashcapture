@@ -481,6 +481,35 @@ namespace CrashCapture {
         Log::Close();
     }
 
+    // A stack overflow leaves the faulting thread no room to walk frames or run dbghelp.
+    static EXCEPTION_RECORD g_soRec;
+    static CONTEXT g_soCtx;
+
+    static DWORD WINAPI OverflowReportThread(LPVOID)
+    {
+        EXCEPTION_POINTERS ep;
+        ep.ExceptionRecord = &g_soRec;
+        ep.ContextRecord = &g_soCtx;
+        WriteCrashReport("unhandled exception", &ep);
+        return 0;
+    }
+
+    static void WriteOverflowReport(EXCEPTION_POINTERS* ep)
+    {
+        if (ep && ep->ExceptionRecord) memcpy(&g_soRec, ep->ExceptionRecord, sizeof(g_soRec));
+        else memset(&g_soRec, 0, sizeof(g_soRec));
+        if (ep && ep->ContextRecord) memcpy(&g_soCtx, ep->ContextRecord, sizeof(g_soCtx));
+        else memset(&g_soCtx, 0, sizeof(g_soCtx));
+
+        HANDLE th = CreateThread(NULL, 0, OverflowReportThread, NULL, 0, NULL);
+        if (!th) {
+            WriteCrashReport("unhandled exception", ep); // best effort on the faulting thread
+            return;
+        }
+        WaitForSingleObject(th, 8000);
+        CloseHandle(th);
+    }
+
     static LONG HandleException(const char* kind, EXCEPTION_POINTERS* ep, bool firstChance)
     {
         if (InterlockedCompareExchange(&g_inReport, 1, 0) != 0)
@@ -497,7 +526,10 @@ namespace CrashCapture {
         }
 
         if (write) {
-            WriteCrashReport(kind, ep);
+            bool overflow = ep && ep->ExceptionRecord &&
+                            ep->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW;
+            if (overflow) WriteOverflowReport(ep);
+            else WriteCrashReport(kind, ep);
             RememberPc(pc, now);
             if (firstChance && ++g_firstChanceReports == kMaxFirstChanceReports)
                 Log::Notice("[Crash Capture] first-chance report cap reached (%d); "
