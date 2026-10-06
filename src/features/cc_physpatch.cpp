@@ -601,7 +601,7 @@ namespace CrashCapture {
             lo = *(uint16_t*)(flong + kMinListElemLongNext);
         }
         if (longCorrupt)
-            Log::Debug("[CC-PATCH] minlist add: skip-list walk exceeded %u live element(s); treating the list as corrupt\n",
+            Log::Debug("[CC-PATCH] minlist add: skip-list walk exceeded %u live element(s)\n",
                        maxWalk);
         uint32_t firstjAfter = lastj;
 
@@ -628,7 +628,7 @@ namespace CrashCapture {
             goto linked;
         }
         if (corrupt)
-            Log::Debug("[CC-PATCH] minlist add: walk exceeded %u live element(s); treating the list as corrupt and appending\n",
+            Log::Debug("[CC-PATCH] minlist add: walk exceeded %u live element(s)\n",
                        maxWalk);
         // insert after the last element
         {
