@@ -508,6 +508,18 @@ namespace CrashCapture {
         Platform::DumpThread("dump", reason ? reason : "manual dump_now");
     }
 
+    void Kill(const char* reason)
+    {
+        Log::F("[Crash Capture] kill requested (%s); terminating process.\n",
+               reason && *reason ? reason : "crashcapture.kill");
+        Log::Flush();
+        #if defined(CC_WINDOWS)
+            TerminateProcess(GetCurrentProcess(), 0xDEAD);
+        #else
+            _exit(0xDE);
+        #endif
+    }
+
     // --------- core-report ---
 
     static char g_ctxKind[64] = {0};

@@ -20,24 +20,20 @@ namespace CrashCapture {
     static volatile uint64_t g_mapStartMs = 0;
 
     // the crashcapture module itself, so we can skip our own frames.
-    static const CCModule* g_selfMod = NULL;
-    static void ResolveSelf()
-    {
-        if (g_selfMod) return;
-        g_selfMod = Modules::Find((uintptr_t)(void*)&HangMap::Capture);
-    }
-
+    static uintptr_t g_selfFn = 0;
     static bool IsSelf(uintptr_t a)
     {
-        ResolveSelf();
-        return g_selfMod && Modules::Find(a) == g_selfMod;
+        if (!g_selfFn) g_selfFn = (uintptr_t)(void*)&HangMap::Capture;
+        const CCModule* self = Modules::Find(g_selfFn);
+        return self && Modules::Find(a) == self;
     }
 
     void HangMap::Reset()
     {
         g_mapCount = 0;
         g_mapStartMs = MonotonicMs();
-        ResolveSelf();
+        Modules::Refresh();
+        IsSelf(0);
     }
 
     void HangMap::Capture(uintptr_t pc, const uintptr_t* frames, int nframes)
@@ -58,20 +54,31 @@ namespace CrashCapture {
     // resolve one probe to the code site it actually represents
     static uintptr_t SiteOf(const HangSample& s)
     {
-        int i = 0;
-        while (i < s.nframes && IsSelf(s.frames[i])) ++i;
         #if defined(CC_LINUX)
-            if (i + 1 < s.nframes) {
-                const CCModule* m0 = Modules::Find(s.frames[i]);
-                if (!m0 || strcmp(m0->name, "[anon-exec]") == 0) ++i;
+            int i = 0;
+            while (i < s.nframes && IsSelf(s.frames[i])) ++i;
+            for (; i < s.nframes; ++i) {
+                uintptr_t a = s.frames[i];
+                if (!a || IsSelf(a)) continue;
+                const CCModule* m = Modules::Find(a);
+                if (!m || strcmp(m->name, "[anon-exec]") == 0) continue;
+                return a;
             }
+            for (; i < s.nframes; ++i) {
+                uintptr_t a = s.frames[i];
+                if (a && !IsSelf(a)) return a;
+            }
+            return s.pc;
+        #else
+            int i = 0;
+            while (i < s.nframes && IsSelf(s.frames[i])) ++i;
+            for (; i < s.nframes; ++i) {
+                uintptr_t a = s.frames[i];
+                if (!a || IsSelf(a)) continue;
+                return a;
+            }
+            return IsSelf(s.pc) ? 0 : s.pc;
         #endif
-        for (; i < s.nframes; ++i) {
-            uintptr_t a = s.frames[i];
-            if (!a || IsSelf(a)) continue;
-            return a;
-        }
-        return IsSelf(s.pc) ? 0 : s.pc;
     }
 
     // ---- report section ---

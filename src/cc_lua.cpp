@@ -1177,6 +1177,14 @@ namespace CrashCapture {
         return 0;
     }
 
+    static int cc_lua_kill(lua_State* L)
+    {
+        const char* reason = (g_api.ok && g_api.gettop(L) >= 1 && g_api.type(L, 1) == CC_LT_STR)
+            ? g_api.tolstring(L, 1, NULL) : NULL;
+        CrashCapture::Kill(reason && *reason ? reason : "crashcapture.kill()");
+        return 0;
+    }
+
     static ILuaInterface* IfaceForState(lua_State* L);
 
     static int cc_lua_trace(lua_State* L)
@@ -1993,6 +2001,7 @@ namespace CrashCapture {
             L->PushCFunction(cc_lua_pulse); L->SetField(-2, "pulse");
             L->PushCFunction(cc_lua_physpause); L->SetField(-2, "phys_pause");
             L->PushCFunction(cc_lua_dump); L->SetField(-2, "dump");
+            L->PushCFunction(cc_lua_kill); L->SetField(-2, "kill");
             L->PushCFunction(cc_lua_trace); L->SetField(-2, "trace");
             L->PushCFunction(cc_lua_frametime); L->SetField(-2, "frametime");
             L->PushCFunction(cc_lua_profile); L->SetField(-2, "profile");

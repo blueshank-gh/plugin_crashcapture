@@ -92,6 +92,7 @@ namespace CrashCapture {
     void Pulse();
     void Grace(int seconds);
     void DumpNow(const char* reason);
+    void Kill(const char* reason);
     const char* StallClassName(int cls);
     uint64_t MonotonicMs();
     void UtcStamp(char* out, size_t outsz);
