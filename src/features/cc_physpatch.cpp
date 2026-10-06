@@ -582,17 +582,27 @@ namespace CrashCapture {
         // find place to insert (at least one element exists here)
         uint32_t lastj = *(uint32_t*)(self + kMinListFirstElement);
         uint32_t maxCmpLen = 3;
+        // a list is never longer than its live count, walking past that means a cyclic chain
+        uint32_t maxWalk = *(uint32_t*)(self + kMinListCounter);
+        if (maxWalk < 1) maxWalk = 1;
+        if (maxWalk > 0xFFFD) maxWalk = 0xFFFD;
 
         // long walk over the skip-list (skipped when the skip-list is disabled)
         uint32_t lo = g_minlistSkipList ? kMinListUnused : *(uint32_t*)(self + kMinListFirstLong);
         uint32_t longEnd = g_minlistBoundA ? 0xFFFD : 0xFFFF;
+        uint32_t longWalk = 0;
+        bool longCorrupt = false;
         while (lo < longEnd) {
+            if (++longWalk > maxWalk) { longCorrupt = true; break; }
             char* flong = MinListSlot(elems, lo);
             if (*(float*)(flong + kMinListElemValue) >= value) break;
             ++maxCmpLen;
             lastj = lo;
             lo = *(uint16_t*)(flong + kMinListElemLongNext);
         }
+        if (longCorrupt)
+            Log::Debug("[CC-PATCH] minlist add: skip-list walk exceeded %u live element(s); treating the list as corrupt\n",
+                       maxWalk);
         uint32_t firstjAfter = lastj;
 
         // short walk
@@ -601,7 +611,10 @@ namespace CrashCapture {
         uint32_t j = *(uint16_t*)(f + kMinListElemNext);
         uint32_t shortEnd = g_minlistBoundB ? 0xFFFD : 0xFFFF;
         uint32_t promotePos = kMinListUnused;
+        uint32_t walk = 0;
+        bool corrupt = false;
         for (; j < shortEnd; j = *(uint16_t*)(f + kMinListElemNext)) {
+            if (++walk > maxWalk) { corrupt = true; break; }
             f = MinListSlot(elems, j);
             ++countCmp;
             if (countCmp == maxCmpLen - 2) promotePos = j;
@@ -614,6 +627,9 @@ namespace CrashCapture {
             *(uint16_t*)(l + kMinListElemNext) = returnIndex;
             goto linked;
         }
+        if (corrupt)
+            Log::Debug("[CC-PATCH] minlist add: walk exceeded %u live element(s); treating the list as corrupt and appending\n",
+                       maxWalk);
         // insert after the last element
         {
             char* l = MinListSlot(elems, lastj);
