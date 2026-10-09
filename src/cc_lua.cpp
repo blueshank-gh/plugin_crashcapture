@@ -1694,11 +1694,14 @@ namespace CrashCapture {
     }
 
     // --------- console-commands ---
-
+    static const int CC_CON_ARGV_OFFSET = 1032;
     struct CCConArgs {
         int argc;
-        const char** argv;
-        const char* Arg(int i) const { return (argv && i >= 0 && i < argc && argv[i]) ? argv[i] : ""; }
+        const char* Arg(int i) const
+        {
+            const char* const* argv = (const char* const*)((const char*)this + CC_CON_ARGV_OFFSET);
+            return (i >= 0 && i < argc && argv[i]) ? argv[i] : "";
+        }
     };
 
     static bool ConArgBool(const char* v)
