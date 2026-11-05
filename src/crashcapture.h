@@ -89,7 +89,7 @@ namespace CrashCapture {
     void InstallHandlers();
     void Shutdown();
     bool Ready();
-    void Pulse();
+    void Pulse(int realm = -1);
     void Grace(int seconds);
     void DumpNow(const char* reason);
     void Kill(const char* reason);
@@ -288,9 +288,11 @@ namespace CrashCapture {
 
     // --------- cc-watchdog ---
     namespace Watchdog {
+        enum PulseRealm { PULSE_ENGINE = -1, PULSE_CLIENT = 0, PULSE_SERVER = 1, PULSE_MENU = 2 };
         void Start(bool deferredArm);
         void Stop();
-        void Pulse();
+        void Pulse(int realm = PULSE_ENGINE);
+        void Disarm();
         bool HangState(uint64_t* sinceMs);
     }
     extern std::atomic<uint64_t> g_lastPulseMs;

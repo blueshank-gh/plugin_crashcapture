@@ -469,12 +469,12 @@ namespace CrashCapture {
         return g_initialized;
     }
 
-    void Pulse()
+    void Pulse(int realm)
     {
         if (!g_initialized) return;
         static bool first = true;
         if (first) { first = false; Log::Debug("[Crash Capture] first pulse\n"); }
-        Watchdog::Pulse();
+        Watchdog::Pulse(realm);
         Log::PumpConsole();
         #if defined(CC_LINUX) // TODO: windows at some point.
             Phys::Recover::PollGameThread();

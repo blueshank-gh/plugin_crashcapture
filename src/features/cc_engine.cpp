@@ -28,6 +28,10 @@ namespace CrashCapture {
             {"engine.host_runframe", "engine", "_Z13Host_RunFramef",
                 "55 89 E5 57 56 53 83 EC 3C C6 05 ?? ?? ?? ?? 00 8B 15 ?? ?? ?? ?? F3 0F 10 5D 08 66 0F 7E DF 85 D2",
                 {{CC_STEP_END, 0, 0}}},
+            // scr_drawloading cleared at the top of Host_RunFrame (x86 absolute operand)
+            {"engine.loading_byte", "engine", NULL,
+                "55 89 E5 57 56 53 83 EC 3C C6 05 ?? ?? ?? ?? 00 8B 15 ?? ?? ?? ?? F3 0F 10 5D 08 66 0F 7E DF 85 D2",
+                {{CC_STEP_ABS32, 11, 0}, {CC_STEP_END, 0, 0}}},
         #elif defined(CC_LINUX) && defined(CC_X64)
             // sig runs through `mov edi, 1` (BF 01..): the non-fatal twin is identical up to 0x59.
             {"engine.sys_error", "engine", NULL,
@@ -36,6 +40,10 @@ namespace CrashCapture {
             {"engine.host_runframe", "engine", NULL,
                 "55 48 89 E5 41 56 66 41 0F 7E C6 41 55 41 54 53 48 83 EC 20 4C 8B 25 ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 41 8B 94 24 0C 10 00 00 C6 00 00 85 D2 41 0F 95 C5 0F 85 ?? ?? ?? ??",
                 {{CC_STEP_END, 0, 0}}},
+            // scr_drawloading cleared at the top of Host_RunFrame (x64 GOT slot -> byte)
+            {"engine.loading_byte", "engine", NULL,
+                "55 48 89 E5 41 56 66 41 0F 7E C6 41 55 41 54 53 48 83 EC 20 4C 8B 25 ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 41 8B 94 24 0C 10 00 00 C6 00 00 85 D2 41 0F 95 C5 0F 85 ?? ?? ?? ??",
+                {{CC_STEP_REL, 30, 34}, {CC_STEP_DEREF, 0, 0}, {CC_STEP_END, 0, 0}}},
         #elif defined(CC_WINDOWS) && defined(CC_X86)
             // __cdecl; sig ends past `push 1` (6A 01) to skip the non-fatal twin.
             {"engine.sys_error", "engine", NULL,

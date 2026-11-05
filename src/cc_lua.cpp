@@ -175,6 +175,8 @@ namespace CrashCapture {
 
     static void ClearRealm(int r)
     {
+        if ((r == LuaState::CLIENT || r == LuaState::SERVER) && g_lastPulseMs != 0)
+            Watchdog::Disarm();
         g_realm[r] = NULL;
         g_apiState[r] = NULL;
         g_apiInstalled[r] = false;
@@ -930,9 +932,10 @@ namespace CrashCapture {
 
     static int cc_lua_pulse(lua_State* L)
     {
-        CrashCapture::Pulse();
-        if (!g_moduleLoad) Lua::EnsureApi();
         ILuaInterface* l = IfaceForState(L);
+        int r = l ? RealmOf(l) : Watchdog::PULSE_ENGINE;
+        CrashCapture::Pulse(r);
+        if (!g_moduleLoad) Lua::EnsureApi();
         if (l) RefreshMapName(l);
         return 0;
     }

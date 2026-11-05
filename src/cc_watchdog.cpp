@@ -52,9 +52,12 @@ namespace CrashCapture {
         #endif
     }
 
-    void Watchdog::Pulse()
+    void Watchdog::Pulse(int realm)
     {
-        if (g_lastPulseMs == 0) {
+        static bool bound = false;
+        if (!bound) {
+            bound = true;
+
             // first pulse: remember which thread the heartbeat comes from...
             #if defined(CC_WINDOWS)
                 g_gameThreadId = GetCurrentThreadId();
@@ -91,7 +94,22 @@ namespace CrashCapture {
                    (unsigned long long)g_gameThreadTid);
             #endif
         }
+
+        if (realm == PULSE_MENU) {
+            static bool saidMenu = false;
+            if (!saidMenu) {
+                saidMenu = true;
+                Log::Debug("[Crash Capture] menu realm pulses do not arm freeze detection\n");
+            }
+            return;
+        }
+
         g_lastPulseMs = MonotonicMs();
+    }
+
+    void Watchdog::Disarm()
+    {
+        g_lastPulseMs = 0;
     }
 
     static uint64_t g_lastReportMs = 0; // when we last WROTE a hang report (for debounce)
@@ -173,6 +191,7 @@ namespace CrashCapture {
     // after a dump, optionally kill the process once the grace window passes
     static void MaybeHardKill(uint64_t now)
     {
+        if (Engine::IsLoading() == 1) return;
         if (Cfg().hang_kill_sec > 0 &&
             now - g_hangStartMs > (uint64_t)Cfg().hang_kill_sec * 1000ull) {
             Log::F("[Crash Capture] hang persisted %ds past first dump; terminating process.\n",
@@ -298,6 +317,13 @@ namespace CrashCapture {
             HWND hwnd = FindGameWindow();
             if (!hwnd) return;
 
+            if (Engine::IsLoading() == 1) {
+                if (g_winHung) NoteRecovery(now);
+                g_winHung = false;
+                g_winHungSinceMs = 0;
+                return;
+            }
+
             if (!U.IsHungAppWindow(hwnd)) {
                 if (!g_winSawAlive) { // first time the engine window is responsive
                     g_winSawAlive = true;
@@ -352,7 +378,15 @@ namespace CrashCapture {
             if (timeout <= 0) continue;
 
             uint64_t now = MonotonicMs();
-            if (Engine::IsLoading() == 1) Grace(10);
+            int loading = Engine::IsLoading();
+            if (loading == 1) {
+                Grace(10);
+            }
+            #if defined(CC_CLIENT)
+            else if (loading < 0) {
+                Grace(10); // client builds stay conservative when the loading state is unknown
+            }
+            #endif
 
             if (g_graceUntilMs && g_lastPulseMs && g_lastPulseMs != g_graceAnchorPulse &&
                 now - g_lastPulseMs < (uint64_t)timeout * 1000ull)
@@ -361,13 +395,19 @@ namespace CrashCapture {
             if (now < g_graceUntilMs) continue; // inside a known stall (map change)
 
             if (g_lastPulseMs != 0) {
+                #if defined(CC_WINDOWS)
+                    if (g_winHung) {
+                        g_winHung = false;
+                        g_winHungSinceMs = 0;
+                    }
+                #endif
                 HeartbeatTick(timeout, now); // GameFrame or lua-timer pulse source
+            } else {
+                if (g_hangPending) NoteRecovery(now);
+                #if defined(CC_WINDOWS)
+                    if (Cfg().window_watchdog) WindowProbeTick(timeout, now);
+                #endif
             }
-            #if defined(CC_WINDOWS)
-                else if (Cfg().window_watchdog) {
-                    WindowProbeTick(timeout, now); // no pulse, watch the message pump
-                }
-            #endif
         }
         g_running = false;
     }
