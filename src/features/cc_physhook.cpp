@@ -28,6 +28,9 @@ namespace CrashCapture {
         {"hook.simulate_time_event", "vphysics", NULL,
             "55 89 E5 56 8B 75 0C 53 8B 5D 08 83 EC 08 8B 46",
             {{CC_STEP_END, 0, 0}}},
+        {"hook.psi_time_event", "vphysics", NULL,
+            "55 66 0F EF C0 89 E5 57 56 53 83 EC 0C 8B 5D 0C 8B 75 08",
+            {{CC_STEP_END, 0, 0}}},
     #elif defined(CC_X64)
         {"hook.update_exact", "vphysics", NULL,
             "55 48 89 E5 41 56 41 55 41 54 53 48 89 FB 48 83 EC 20 44 0F B6 77",
@@ -54,13 +57,15 @@ namespace CrashCapture {
     typedef void (*Fn_ue)(void*, int, int); // update_exact_mindist_events(mindist,a2,a3)
     typedef void (*Fn_di)(void*); // do_impact(mindist)
     typedef void (*Fn_stev)(void*, void*); // simulate_time_event(mindist,env)
+    typedef void (*Fn_psiev)(void*, void*); // IVP_Time_Event_PSI::simulate_time_event(this,env)
     static Fn_ste o_ste = 0;
     static Fn_ue o_ue = 0;
     static Fn_di o_di = 0;
     static Fn_stev o_stev = 0;
+    static Fn_psiev o_psiev = 0;
 
     static bool g_installed = false;
-    static void* g_targets[4] = { 0, 0, 0, 0 };
+    static void* g_targets[5] = { 0, 0, 0, 0, 0 };
 
     static thread_local uint64_t g_tickStartNs = 0;
     static thread_local bool g_latched = false;
@@ -158,6 +163,13 @@ namespace CrashCapture {
         Phys::Patch::DeferEpsilonRefire(mindist, env);
     }
 
+    // the PSI time event re-schedules itself each simulate...
+    static void h_psi(void* self, void* env)
+    {
+        BudgetCheck(NULL);
+        o_psiev(self, env);
+    }
+
     bool Phys::Bind::Install()
     {
         if (g_installed) return true;
@@ -167,6 +179,7 @@ namespace CrashCapture {
         uintptr_t a_ue = Sig::Get("hook.update_exact");
         uintptr_t a_di = Sig::Get("hook.do_impact");
         uintptr_t a_stev = Sig::Get("hook.simulate_time_event");
+        uintptr_t a_psi = Sig::Get("hook.psi_time_event");
         if (!a_ste || !a_ue) {
             return false; // this... shouldn't happen, vphysics didn't load yet.
         }
@@ -185,6 +198,7 @@ namespace CrashCapture {
         g_targets[1] = (void*)a_ue;
         if (a_di && Hook::Install((void*)a_di, (void*)h_di, (void**)&o_di)) g_targets[2] = (void*)a_di;
         if (a_stev && Hook::Install((void*)a_stev, (void*)h_stev, (void**)&o_stev)) g_targets[3] = (void*)a_stev;
+        if (a_psi && Hook::Install((void*)a_psi, (void*)h_psi, (void**)&o_psiev)) g_targets[4] = (void*)a_psi;
 
         g_installed = true;
         return true;
@@ -193,11 +207,11 @@ namespace CrashCapture {
     void Phys::Bind::Uninstall()
     {
         if (!g_installed) return;
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < 5; ++i) {
             if (g_targets[i]) Hook::Uninstall(g_targets[i]);
             g_targets[i] = 0;
         }
-        o_ste = 0; o_ue = 0; o_di = 0; o_stev = 0;
+        o_ste = 0; o_ue = 0; o_di = 0; o_stev = 0; o_psiev = 0;
         g_installed = false;
         Log::Debug("[CC-HOOK] removed all IVP detours (%llu lag episode(s) this run).\n",
                     (unsigned long long)g_lagEpisodes);

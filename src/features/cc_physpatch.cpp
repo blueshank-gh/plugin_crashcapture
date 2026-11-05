@@ -146,6 +146,129 @@ namespace CrashCapture {
         void Phys::Patch::CacheDispatchBounds() {}
     #endif
 
+    // --- hull-manager guards (gm.phys.hull_reset_guard / gm.phys.hull_delete_guard) ---
+    
+    #if defined(CC_X86)
+        static const int kHullMinList = 0x20;
+        static const int kHullElems = 0x24;
+        static const int kHullFirst = 0x30;
+        static const int kHullCount = 0x34;
+        static const int kMlSlot = 16;
+        static const int kMlNext = 4;
+        static const int kMlCap = 0;
+        static const int kMlElement = 12;
+        static const uint16_t kMlUnused = 0xFFFF;
+
+        // vphysics vtable whitelist and executable extents
+        static uintptr_t g_vpImgLo = 0, g_vpImgHi = 0, g_vpExecLo = 0, g_vpExecHi = 0;
+        static bool g_vpBoundsDone = false;
+
+        static void CacheIvpBounds()
+        {
+            if (g_vpBoundsDone) return;
+            const CCModule* m = Modules::FindByName("vphysics");
+            if (!m) return; // not mapped yet, retry on the next call
+            g_vpBoundsDone = true;
+            size_t imgSpan = 0;
+            uintptr_t imgLo = Modules::FileExtent(m, &imgSpan);
+            if (!imgLo || imgSpan < 16) return;
+            g_vpImgLo = imgLo;
+            g_vpImgHi = imgLo + imgSpan;
+            g_vpExecLo = m->base;
+            g_vpExecHi = m->base + m->size;
+        }
+
+        static bool ElemDispatchable(void* elem, int slotOff, uintptr_t* outTarget)
+        {
+            CacheIvpBounds();
+            if (!g_vpImgLo) return true; // fail open
+            if (!elem || !Mem::IsReadable(elem, sizeof(void*))) return false;
+            uintptr_t vptr = *(uintptr_t*)elem;
+            if (vptr < g_vpImgLo || vptr > g_vpImgHi - (uintptr_t)(slotOff + 4)) return false;
+            uintptr_t target = *(uintptr_t*)(vptr + slotOff);
+            if (target < g_vpExecLo || target >= g_vpExecHi) return false;
+            if (outTarget) *outTarget = target;
+            return true;
+        }
+
+        // walk the hull list's schedule chain read-only.
+        static bool HullListHasStale(void* self, int slotOff, uint32_t* badIdx)
+        {
+            char* h = (char*)self;
+            if (!Mem::IsReadable(h + kHullMinList, kHullCount + 4 - kHullMinList)) return true;
+            uint16_t cap = *(uint16_t*)(h + kHullMinList + kMlCap);
+            uintptr_t elems = *(uintptr_t*)(h + kHullElems);
+            uint32_t first = *(uint32_t*)(h + kHullFirst);
+            uint32_t count = *(uint32_t*)(h + kHullCount);
+            if (!count) return false;
+            if (!elems || first >= cap) return true;
+            uint32_t idx = first;
+            for (uint32_t step = 0; step <= count; ++step) {
+                if (idx >= cap) return true;
+                char* slot = (char*)elems + (uintptr_t)idx * kMlSlot;
+                if (!Mem::IsReadable(slot, kMlSlot)) return true;
+                void* elem = *(void**)(slot + kMlElement);
+                if (!ElemDispatchable(elem, slotOff, NULL)) { if (badIdx) *badIdx = idx; return true; }
+                idx = *(uint16_t*)(slot + kMlNext);
+                if (idx == kMlUnused) return false;
+            }
+            return true; // cycled past the live count.
+        }
+
+        typedef void (*Fn_hull_mgr)(void*);
+        static Fn_hull_mgr o_hull_reset = 0;
+        static Fn_hull_mgr o_hull_del = 0;
+        typedef void (*Fn_ml_remove)(void*, unsigned);
+        static Fn_ml_remove g_mlRemove = 0;
+
+        static void h_hull_reset(void* self)
+        {
+            if (self) {
+                uint32_t bad = 0;
+                if (HullListHasStale(self, 0xC, &bad)) {
+                    Log::Debug("[CC-PATCH] reset_times skipped: hull list 0x%lx slot %u stale\n",
+                               (unsigned long)(uintptr_t)self, (unsigned)bad);
+                    return;
+                }
+            }
+            o_hull_reset(self);
+        }
+
+        static void h_hull_del(void* self)
+        {
+            if (!self) return;
+            if (!HullListHasStale(self, 8, NULL)) { o_hull_del(self); return; }
+            if (!g_mlRemove) g_mlRemove = (Fn_ml_remove)Sig::Get("patch.remove_minlist_elem");
+
+            char* h = (char*)self;
+            uint16_t cap = *(uint16_t*)(h + kHullMinList + kMlCap);
+            uintptr_t elems = *(uintptr_t*)(h + kHullElems);
+            if (!elems || !g_mlRemove) {
+                Log::Debug("[CC-PATCH] hull delete: cannot repair list 0x%lx, leaving it alone\n",
+                           (unsigned long)(uintptr_t)self);
+                return;
+            }
+            for (uint32_t guard = 0; guard <= (uint32_t)cap + 1; ++guard) {
+                if (!*(uint32_t*)(h + kHullCount)) break;
+                uint32_t idx = *(uint32_t*)(h + kHullFirst);
+                if (idx >= cap) {
+                    Log::Debug("[CC-PATCH] hull delete: head index %u out of range, stopping\n", (unsigned)idx);
+                    break;
+                }
+                char* slot = (char*)elems + (uintptr_t)idx * kMlSlot;
+                void* elem = *(void**)(slot + kMlElement);
+                uintptr_t target = 0;
+                if (ElemDispatchable(elem, 8, &target)) {
+                    ((void (*)(void*, void*))target)(elem, self);
+                } else {
+                    Log::Debug("[CC-PATCH] hull delete: dropped stale hull 0x%lx (slot %u)\n",
+                               (unsigned long)(uintptr_t)elem, (unsigned)idx);
+                    g_mlRemove((void*)(h + kHullMinList), idx);
+                }
+            }
+        }
+    #endif
+
     #if defined(CC_X86)
         static const int kRfcEnvOffset = 0xC; // IVP_Core->environment
         static const int kRfcEnvRead = 0x114; // env readable to current_time (+0x110)
@@ -982,6 +1105,44 @@ namespace CrashCapture {
                 NULL,
                 true,   // default_on: proven crash fix, same class as the other gm.phys UAF patches
                 false,  // hot_safe: reachable from the physics thread, no live toggle
+                false,
+            },
+            {
+                "gm.phys.hull_reset_guard",
+                "gmod IVP hull-manager UAF",
+                "skip IVP_Hull_Manager::reset_times when the hull list holds a stale element",
+                CC_PATCH_DETOUR,
+                {"patch.hull_reset", "vphysics", NULL,
+                    "55 89 E5 57 56 53 83 EC 1C 8B 5D 08 F3 0F 10 15",
+                    {{CC_STEP_END, 0, 0}}},
+                0,
+                {0x55,0x89,0xE5,0x57,0x56,0x53,0x83,0xEC,0x1C,0x8B,0x5D,0x08,0xF3,0x0F,0x10,0x15},
+                {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+                {0},
+                16,
+                (void*)h_hull_reset,
+                (void**)&o_hull_reset,
+                true,   // default_on: proven crash fix (issue 48)
+                false,  // hot_safe: reachable from the physics thread, no live toggle
+                false,
+            },
+            {
+                "gm.phys.hull_delete_guard",
+                "gmod IVP hull-manager teardown UAF",
+                "skip the stale hull element instead of calling its vtable in IVP_Hull_Manager::delete_hull_manager",
+                CC_PATCH_DETOUR,
+                {"patch.hull_delete", "vphysics", NULL,
+                    "55 89 E5 53 83 EC 04 8B 5D 08 8B 53 34 85 D2 74",
+                    {{CC_STEP_END, 0, 0}}},
+                0,
+                {0x55,0x89,0xE5,0x53,0x83,0xEC,0x04,0x8B,0x5D,0x08,0x8B,0x53,0x34,0x85,0xD2,0x74},
+                {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+                {0},
+                16,
+                (void*)h_hull_del,
+                (void**)&o_hull_del,
+                true,   // default_on: proven crash fix (issues 50/52, both unrecoverable)
+                false,  // hot_safe: reachable from the entity-delete/level-shutdown path, no live toggle
                 false,
             },
         #elif defined(CC_X64)
