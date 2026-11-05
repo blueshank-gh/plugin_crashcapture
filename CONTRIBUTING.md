@@ -7,8 +7,6 @@ It is short on purpose: the goal is a clean history and a reviewable diff, not a
 If you just want to fix something, the fastest path is:\
 branch, make a focused change, rebase onto the latest master, open a pull request.
 
----
-
 ## Reporting issues
 
 Before opening an issue, search the existing issues first. Duplicates are closed.
@@ -46,8 +44,6 @@ Use the crash report template.
   - If your feature only makes sense on custom overrides or heavily modified builds, say so up front.
 
 Use the feature request template.
-
----
 
 ## Submitting pull requests
 
@@ -115,8 +111,6 @@ Pull requests, trackers, and issues that are primarily AI-generated, spammy, or
 submitted without human verification are closed without further notice.\
 However, this isn't an ultimate decision, we may respond back indicated as such before closing them or asking for them to be re-made.
 
----
-
 ## Labels
 
 Beyond the standard GitHub labels (`bug`, `enhancement`, `question`, `help wanted`, `good first issue`, `duplicate`, `invalid`, `wontfix`, `documentation`), the repository uses these project-specific labels:
@@ -138,8 +132,6 @@ Beyond the standard GitHub labels (`bug`, `enhancement`, `question`, `help wante
 
 Add the relevant labels when you open an issue or pull request.\
 `bug` and `enhancement` are applied automatically by the templates.
-
----
 
 ## AI / LLM usage policy
 
@@ -173,8 +165,6 @@ The worst thing an LLM can do here is waste a reviewer's time on features or pat
 - Responding to reviewers using AI output.
   - This is the worst thing you can do...
 - Submitting code, docs, or reports you cannot explain, maintain, or defend.
-
----
 
 ## Contributor responsibilities
 
