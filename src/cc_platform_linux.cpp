@@ -633,11 +633,11 @@ namespace CrashCapture {
         Report::Section("Registers", Sec_Registers, NULL, true);
         Report::Section("Native stack", Sec_Stack, NULL, true);
         Report::Section("Stack scan (code pointers)", Sec_StackScan, NULL, true);
+        Report::Section("Lua", Sec_Lua, NULL, false);
         if (HangMap::Count() > 0)
             Report::Section("Hang map", HangMap::Section, NULL, true);
         if (Cfg().threads)
             Report::Section("Threads", Sec_Threads, NULL, true);
-        Report::Section("Lua", Sec_Lua, NULL, false);
         Report::Section("Modules", Sec_Modules, NULL, false);
         if (Patch::Count() > 0)
             Report::Section("Patches", Patch::ReportSection, NULL, false);
