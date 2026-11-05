@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 
 #if defined(CC_WINDOWS)
     #define WIN32_LEAN_AND_MEAN
@@ -66,15 +67,15 @@ namespace CrashCapture {
                 "48 89 4C 24 08 48 89 54 24 10 4C 89 44 24 18 4C 89 4C 24 20 48 83 EC 28 48 8B D1 4C 8D 44 24 38 B1 01 E8 ?? ?? ?? ??",
                 {{CC_STEP_END, 0, 0}}},
             {"engine.host_runframe", "engine", NULL,
-                "48 83 EC 48 80 3D ?? ?? ?? ?? 00 0F 29 7C 24 20 0F 28 F8 48 89 5C 24 40 75 79 83 3D ?? ?? ?? ?? 02",
+                "48 83 EC 48 80 3D ?? ?? ?? ?? 00 0F 29 7C 24 20 0F 28 F8 48 89 5C 24 40 75 ?? 83 3D ?? ?? ?? ?? 02 7C ?? 83 3D ?? ?? ?? ?? 06 75 ??",
                 {{CC_STEP_END, 0, 0}}},
             // &scr_drawloading
             {"engine.loading_byte", "engine", NULL,
                 "40 38 35 ?? ?? ?? ?? 74 15 E8 ?? ?? ?? ?? 40 88 35 ?? ?? ?? ?? EB 07 C6 05 ?? ?? ?? ?? 01",
                 {{CC_STEP_REL, 3, 7}, {CC_STEP_END, 0, 0}}},
-            // CBaseClientState::SetSignonState cmp edx,7 range-guard + cmp edx,[rcx+14Ch]
+            // CBaseClientState::SetSignonState cmp edx,7 range-guard + cmp edx,[rcx+disp] (14Ch main, 15Ch x86-64)
             {"client.setsignon", "engine", NULL,
-                "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 41 8B F0 8B FA 48 8B D9 83 FA 07 0F 87 ?? ?? ?? ?? 83 FA 02 7E ?? 3B 91 4C 01 00 00",
+                "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 41 8B F0 8B FA 48 8B D9 83 FA 07 0F 87 ?? ?? ?? ?? 83 FA 02 7E ?? 3B 91 ?? ?? ?? ??",
                 {{CC_STEP_END, 0, 0}}},
         #endif
     };
@@ -220,10 +221,23 @@ namespace CrashCapture {
     #if defined(CC_WINDOWS)
         enum { SIGNON_NONE = 0, SIGNON_FULL = 6 };
         #if defined(CC_X64)
-            static const int kSignonOff = 0x14C;
+            static int g_signonOff = 0x14C;
             typedef char (*Fn_setsignon)(void* self, int64_t state, uint32_t spawn);
+
+            static int DiscoverSignonOffset(uintptr_t fn)
+            {
+                for (int i = 0; i + 6 <= 0x40; ++i) {
+                    const unsigned char* p = (const unsigned char*)(fn + i);
+                    if (!Mem::IsReadable((void*)p, 6)) break;
+                    if (p[0] != 0x3B || p[1] != 0x91) continue;
+                    int32_t off;
+                    memcpy(&off, p + 2, sizeof(off));
+                    if (off > 0 && off < 0x1000) return off;
+                }
+                return 0x14C;
+            }
         #else
-            static const int kSignonOff = 0x130;
+            static const int g_signonOff = 0x130;
             typedef char (__fastcall *Fn_setsignon)(void* self, void* edx, int state, int spawn);
         #endif
         static Fn_setsignon o_setsignon = 0;
@@ -233,7 +247,7 @@ namespace CrashCapture {
 
         static void NoteSignon(void* self)
         {
-            uintptr_t p = (uintptr_t)self + kSignonOff;
+            uintptr_t p = (uintptr_t)self + g_signonOff;
             if (self && Mem::IsReadable((void*)p, sizeof(int))) {
                 int s = *(int*)p;
                 if (s >= 0 && s <= 7) g_signonState = s;
@@ -294,6 +308,9 @@ namespace CrashCapture {
         #if defined(CC_WINDOWS) && !defined(INTERFACE_PLUGIN)
             if (!g_signonHooked) {
                 uintptr_t a = Sig::Get("client.setsignon");
+                #if defined(CC_X64)
+                    if (a) g_signonOff = DiscoverSignonOffset(a);
+                #endif
                 bool ok = a && Hook::Install((void*)a, (void*)h_setsignon, (void**)&o_setsignon);
                 if (ok) { g_setsignonTarget = (void*)a; g_signonHooked = true; any = true; }
                 Log::Debug("[CC-ENGINE] setsignon: sig=%p hooked=%d\n", (void*)a, (int)ok);
