@@ -181,9 +181,10 @@ namespace CrashCapture {
         static bool ElemDispatchable(void* elem, int slotOff, uintptr_t* outTarget)
         {
             CacheIvpBounds();
-            if (!g_vpImgLo) return true; // fail open
             if (!elem || !Mem::IsReadable(elem, sizeof(void*))) return false;
             uintptr_t vptr = *(uintptr_t*)elem;
+            if (!vptr) return false;
+            if (!g_vpImgLo) return true; // fail open
             if (vptr < g_vpImgLo || vptr > g_vpImgHi - (uintptr_t)(slotOff + 4)) return false;
             uintptr_t target = *(uintptr_t*)(vptr + slotOff);
             if (target < g_vpExecLo || target >= g_vpExecHi) return false;
@@ -200,10 +201,11 @@ namespace CrashCapture {
             uintptr_t elems = *(uintptr_t*)(h + kHullElems);
             uint32_t first = *(uint32_t*)(h + kHullFirst);
             uint32_t count = *(uint32_t*)(h + kHullCount);
-            if (!count) return false;
-            if (!elems || first >= cap) return true;
+            if (first == kMlUnused) return count != 0;
+            if (!elems || !count || first >= cap) return true;
+            uint32_t limit = count <= (uint32_t)cap ? count : (uint32_t)cap;
             uint32_t idx = first;
-            for (uint32_t step = 0; step <= count; ++step) {
+            for (uint32_t step = 0; step <= limit; ++step) {
                 if (idx >= cap) return true;
                 char* slot = (char*)elems + (uintptr_t)idx * kMlSlot;
                 if (!Mem::IsReadable(slot, kMlSlot)) return true;
@@ -212,7 +214,7 @@ namespace CrashCapture {
                 idx = *(uint16_t*)(slot + kMlNext);
                 if (idx == kMlUnused) return false;
             }
-            return true; // cycled past the live count.
+            return true; // cycled past the walk bound.
         }
 
         typedef void (*Fn_hull_mgr)(void*);
