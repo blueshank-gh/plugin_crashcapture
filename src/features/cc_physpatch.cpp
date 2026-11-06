@@ -302,9 +302,9 @@ namespace CrashCapture {
     // --- gm.phys.mindist_null_edge (PATCH_DETOUR) ---
     static int h_pk(void* mms, void* e1, void* e2, void* cA, void* cB)
     {
-        if (mms && Mem::IsReadable(mms, sizeof(void*))) {
-            void* mindist = *(void**)mms;
-            if (mindist && Phys::Recover::MindistObjectsNaN(mindist)) {
+        if (mms) {
+            void* mindist = NULL;
+            if (Phys::Recover::SolverMindistNaN(mms, &mindist)) {
                 Log::Debug("[CC-PATCH] p_minimize_PK skipped: mindist 0x%lx object position is NaN\n",
                         (unsigned long)(uintptr_t)mindist);
                 return 1; // converged, the object exploded to NaN
@@ -370,15 +370,16 @@ namespace CrashCapture {
 
     static int h_ff(void* mms, void* e1, void* e2, void* cA, void* cB)
     {
-        if (mms && Mem::IsReadable(mms, sizeof(void*))) {
-            void* mindist = *(void**)mms;
+        if (mms) {
+            void* mindist = NULL;
+            bool nan = Phys::Recover::SolverMindistNaN(mms, &mindist);
             if (mindist && !Phys::Recover::MindistObjectsLive(mindist)) {
                 Log::Debug("[CC-PATCH] p_minimize_FF skipped: retained mindist 0x%lx "
                            "references a stale object\n",
                            (unsigned long)(uintptr_t)mindist);
                 return 1; // converged, the retained mindist is stale
             }
-            if (mindist && Phys::Recover::MindistObjectsNaN(mindist)) {
+            if (nan) {
                 Log::Debug("[CC-PATCH] p_minimize_FF skipped: mindist 0x%lx object position is NaN\n",
                            (unsigned long)(uintptr_t)mindist);
                 return 1; // converged, the object exploded to NaN

@@ -374,11 +374,9 @@ namespace CrashCapture {
 
     static bool IvpObjPosNan(uintptr_t ivp)
     {
-        if (!PtrOk(ivp)) return false;
-        uintptr_t coreSlot = ivp + kIvpCore;
-        if (!Mem::IsReadable((void*)coreSlot, sizeof(void*))) return false;
-        uintptr_t core = *(uintptr_t*)coreSlot;
-        if (!PtrOk(core) || !Mem::IsReadable((void*)(core + kCorePos), 24)) return false;
+        if (!ivp || (ivp & (sizeof(void*) - 1))) return false;
+        uintptr_t core = *(uintptr_t*)(ivp + kIvpCore);
+        if (!core || (core & (sizeof(void*) - 1))) return false;
         #if defined(CC_X86)
             double x = *(double*)(core + kCorePos);
             double y = *(double*)(core + kCorePos + 8);
@@ -391,12 +389,15 @@ namespace CrashCapture {
         return isnan(x) || isnan(y) || isnan(z);
     }
 
-    struct NanCheckArgs { uintptr_t m; bool nan; };
+    struct NanCheckArgs { uintptr_t m; uintptr_t mms; bool nan; };
     static void NanCheckInner(void* arg)
     {
         NanCheckArgs* na = (NanCheckArgs*)arg;
-        uintptr_t obj0 = *(uintptr_t*)(na->m + kMindistObj0);
-        uintptr_t obj1 = *(uintptr_t*)(na->m + kMindistObj1);
+        uintptr_t m = na->mms ? *(uintptr_t*)na->mms : na->m;
+        na->m = m;
+        if (!m) return;
+        uintptr_t obj0 = *(uintptr_t*)(m + kMindistObj0);
+        uintptr_t obj1 = *(uintptr_t*)(m + kMindistObj1);
         na->nan = IvpObjPosNan(obj0) || IvpObjPosNan(obj1);
     }
 
@@ -405,8 +406,22 @@ namespace CrashCapture {
         if (!mindist) return false;
         NanCheckArgs na;
         na.m = (uintptr_t)mindist;
+        na.mms = 0;
         na.nan = false;
         RunProtectedQuiet(NanCheckInner, &na);
+        return na.nan;
+    }
+
+    bool Phys::Recover::SolverMindistNaN(void* mindistSlot, void** mindistOut)
+    {
+        if (mindistOut) *mindistOut = NULL;
+        if (!mindistSlot) return false;
+        NanCheckArgs na;
+        na.m = 0;
+        na.mms = (uintptr_t)mindistSlot;
+        na.nan = false;
+        RunProtectedQuiet(NanCheckInner, &na);
+        if (mindistOut) *mindistOut = (void*)na.m;
         return na.nan;
     }
 

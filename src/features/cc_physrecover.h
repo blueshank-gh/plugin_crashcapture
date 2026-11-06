@@ -28,6 +28,7 @@ namespace CrashCapture {
             int* EventLoopMode();
             bool MindistObjectsLive(void* mindist);
             bool MindistObjectsNaN(void* mindist);
+            bool SolverMindistNaN(void* mindistSlot, void** mindistOut);
         }
 
         namespace Frame {
