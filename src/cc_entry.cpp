@@ -1,6 +1,6 @@
 // Crash Capture - Entry Points
 // INTERFACE_PLUGIN -> GMod server plugin
-// INTERFACE_PRELOAD -> Windows version.dll shim (see mimic.h)
+// INTERFACE_PRELOAD -> Windows client preload (see cc_mimic.cpp)
 
 #include "crashcapture.h"
 #include "glua/Interface.h"
@@ -157,7 +157,7 @@ CC_EXPORT void* CreateInterface(const char* name, int* returncode)
 #define NOMINMAX
 #include <windows.h>
 
-// version.dll export proxying lives in cc_mimic.cpp
+// proxy exports for version/winmm/winhttp/wininet live in cc_mimic.cpp
 BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID reserved)
 {
     switch (reason) {

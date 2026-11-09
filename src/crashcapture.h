@@ -33,7 +33,7 @@
 #endif
 
 // INTERFACE_PLUGIN -> server plugin (IGMODSERVERPLUGINCALLBACKS004), gets GameFrame.
-// INTERFACE_PRELOAD -> client preload (version.dll mimic / .so), crash-only.
+// INTERFACE_PRELOAD -> client preload (version/winmm/winhttp/wininet mimic / .so), crash-only.
 #ifdef INTERFACE_PLUGIN
     #define CC_SERVER 1
     #define CC_SIDE "server"
@@ -42,7 +42,7 @@
     #define CC_SIDE "client"
 #endif
 
-#define CC_VERSION "1.5.6"
+#define CC_VERSION "1.5.7"
 #define CC_BUILD __DATE__ " " __TIME__
 
 namespace CrashCapture {
