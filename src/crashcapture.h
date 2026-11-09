@@ -201,6 +201,7 @@ namespace CrashCapture {
         void InstallConCommands(void* iface);
         bool InstallSideloadBootstrap();
         void* SharedHandle();
+        uintptr_t VmModuleBase();
         void* Iface(int realm);
         void* Sym(void* mod, const char* name);
         void PollRecovery();

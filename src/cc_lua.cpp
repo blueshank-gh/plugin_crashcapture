@@ -821,6 +821,38 @@ namespace CrashCapture {
         }
     }
 
+    static uintptr_t FollowJump(uintptr_t at)
+    {
+        unsigned char b[12];
+        if (!Mem::IsReadable((void*)at, 5)) return 0;
+        memcpy(b, (const void*)at, 5);
+        if (b[0] == 0xE9) {
+            int32_t rel = 0;
+            memcpy(&rel, b + 1, sizeof(rel));
+            return (uintptr_t)((intptr_t)at + 5 + (intptr_t)rel);
+        }
+        #if defined(CC_X64)
+            if (!Mem::IsReadable((void*)at, 12)) return 0;
+            memcpy(b, (const void*)at, 12);
+            if (b[0] == 0x48 && b[1] == 0xB8 && b[10] == 0xFF && b[11] == 0xE0) {
+                uintptr_t target = 0;
+                memcpy(&target, b + 2, sizeof(target));
+                return target;
+            }
+        #endif
+        return 0;
+    }
+
+    uintptr_t Lua::VmModuleBase()
+    {
+        uintptr_t at = (uintptr_t)(void*)g_api.sethook;
+        if (!at) return 0;
+        uintptr_t target = FollowJump(at);
+        if (!target) target = at;
+        const CCModule* m = Modules::Find(target);
+        return m ? m->loadbase : 0;
+    }
+
     static void DisarmBreakHook()
     {
         if (!g_api.sethook) return;

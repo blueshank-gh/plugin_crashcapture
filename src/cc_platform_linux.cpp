@@ -402,9 +402,16 @@ namespace CrashCapture {
                 uintptr_t pc0 = (uintptr_t)uc->uc_mcontext.gregs[REG_EIP];
             #endif
             const CCModule* m0 = pc0 ? Modules::Find(pc0) : NULL;
-            if (pc0 && (!m0 || strcmp(m0->name, "[anon-exec]") == 0))
+            if (pc0 && (!m0 || strcmp(m0->name, "[anon-exec]") == 0 || strstr(m0->name, "memfd:"))) {
                 Log::Str("  note: instruction pointer is in anonymous executable memory "
                     "(likely LuaJIT mcode); see the Lua section for the Lua frame.\n");
+                if (Mem::IsExecutable(pc0)) {
+                    char buf[512];
+                    FormatAddress(pc0, buf, sizeof(buf));
+                    Log::F("  #0  %s\n", buf);
+                    return;
+                }
+            }
         }
 
         Log::Str("  (libgcc unwind; the top frames are the signal handler)\n");
@@ -412,7 +419,7 @@ namespace CrashCapture {
         _Unwind_Backtrace(BtCb, &s);
     }
 
-    struct BtArr { uintptr_t* out; int n; int max; };
+    struct BtArr { uintptr_t* out; volatile int n; int max; };
     static _Unwind_Reason_Code BtArrCb(struct _Unwind_Context* ctx, void* arg)
     {
         BtArr* s = (BtArr*)arg;
@@ -421,11 +428,16 @@ namespace CrashCapture {
         return (s->n >= s->max || s->n > 96) ? _URC_END_OF_STACK : _URC_NO_REASON;
     }
 
+    static void BtWalkFn(void* p)
+    {
+        _Unwind_Backtrace(BtArrCb, p);
+    }
+
     int Platform::Backtrace(void* /*vctx*/, uintptr_t* out, int max)
     {
         if (!out || max <= 0) return 0;
         BtArr s = { out, 0, max };
-        _Unwind_Backtrace(BtArrCb, &s);
+        RunProtectedQuiet(BtWalkFn, &s);
         return s.n;
     }
 
@@ -712,9 +724,13 @@ namespace CrashCapture {
         if (g_pendAction == CC_ACT_PROBE) {
             g_pendAction = CC_ACT_DUMP; // one-shot
             if (!g_inReport) {
+                uintptr_t pc = Platform::ContextPC(ucontext);
                 uintptr_t pcs[12];
-                int n = Platform::Backtrace(NULL, pcs, 12);
-                HangMap::Capture(Platform::ContextPC(ucontext), pcs, n);
+                int n = 0;
+                const CCModule* m = pc ? Modules::Find(pc) : NULL;
+                bool mcode = pc && (!m || strcmp(m->name, "[anon-exec]") == 0 || strstr(m->name, "memfd:")) && Mem::IsExecutable(pc);
+                if (!mcode) n = Platform::Backtrace(NULL, pcs, 12);
+                HangMap::Capture(pc, pcs, n);
             }
             g_dumpDone = 1;
             return;

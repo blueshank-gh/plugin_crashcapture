@@ -655,16 +655,49 @@ namespace CrashCapture {
         }
     }
 
+    static bool NameHasNoCase(const char* hay, const char* needle)
+    {
+        if (!hay || !needle || !*needle) return false;
+        size_t n = strlen(needle);
+        for (const char* p = hay; *p; ++p) {
+            size_t i = 0;
+            for (; i < n; ++i) {
+                char a = p[i], b = needle[i];
+                if (!a) break;
+                if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+                if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+                if (a != b) break;
+            }
+            if (i == n) return true;
+        }
+        return false;
+    }
+
+    static bool NameIsLuaVm(const char* name)
+    {
+        return NameHasNoCase(name, "lua_shared") ||
+               NameHasNoCase(name, "ljpatch") ||
+               NameHasNoCase(name, "luajit");
+    }
+
+    static bool ModuleIsLuaVm(const CCModule* m, uintptr_t vmBase)
+    {
+        if (!m) return false;
+        if (NameIsLuaVm(m->name)) return true;
+        return vmBase != 0 && m->loadbase == vmBase;
+    }
+
     struct LuaScan { void* ctx; int state; };
     static void LuaScanFn(void* p)
     {
         LuaScan* s = (LuaScan*)p;
+        uintptr_t vmBase = Lua::VmModuleBase();
 
         uintptr_t pcs[48];
         int n = Platform::Backtrace(s->ctx, pcs, 48);
         for (int i = 0; i < n; ++i) {
             const CCModule* fm = Modules::Find(pcs[i]);
-            if (fm && strstr(fm->name, "lua_shared")) { s->state = 1; return; }
+            if (ModuleIsLuaVm(fm, vmBase)) { s->state = 1; return; }
             if ((!fm || strcmp(fm->name, "[anon-exec]") == 0) && Mem::IsExecutable(pcs[i])) { s->state = 2; return; }
         }
     }
@@ -685,8 +718,9 @@ namespace CrashCapture {
         uintptr_t pc = Platform::ContextPC(ctx);
         if (!pc) { snprintf(out, outsz, "unknown (no thread context)"); return STALL_UNKNOWN; }
 
+        uintptr_t vmBase = Lua::VmModuleBase();
         const CCModule* m = Modules::Find(pc);
-        if (m && strstr(m->name, "lua_shared")) {
+        if (ModuleIsLuaVm(m, vmBase)) {
             snprintf(out, outsz, "lua (interpreter)");
             AppendInFlight(out, outsz);
             return STALL_LUA_INTERP;
@@ -701,20 +735,10 @@ namespace CrashCapture {
             PhysScan ps = { ctx, m, false };
             RunProtectedQuiet(PhysScanFn, &ps);
             if (ps.hit) { snprintf(out, outsz, "physics (%s)", nm); return STALL_PHYSICS; }
-            LuaScan ls = { ctx, 0 };
-            RunProtectedQuiet(LuaScanFn, &ls);
-            if (ls.state == 1) {
-                snprintf(out, outsz, "lua (interpreter) via %s", nm);
-                AppendInFlight(out, outsz);
-                return STALL_LUA_INTERP;
-            }
-            if (ls.state == 2) {
-                snprintf(out, outsz, "lua (JIT trace / mcode) via %s", nm);
-                AppendInFlight(out, outsz);
-                return STALL_LUA_JIT;
-            }
-            snprintf(out, outsz, "native (%s)", nm);
-            return STALL_NATIVE;
+
+            snprintf(out, outsz, "lua (JIT trace / mcode) via %s", nm);
+            AppendInFlight(out, outsz);
+            return STALL_LUA_JIT;
         }
         if (m) {
             PhysScan ps = { ctx, m, false };
