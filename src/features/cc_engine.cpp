@@ -22,61 +22,61 @@ namespace CrashCapture {
     static const CCTarget kEngineTargets[] = {
         #if defined(CC_LINUX) && defined(CC_X86)
             // Sys_Error(const char*, ...)
-            {"engine.sys_error", "engine", NULL,
+            CC_SIG("engine.sys_error", "engine",
                 "55 89 E5 83 EC 18 8D 45 0C C7 04 24 01 00 00 00 89 44 24 08 8B 45 08 89 44 24 04 E8 ?? ?? ?? ?? C9 C3",
-                {{CC_STEP_END, 0, 0}}},
+                CC_END),
             // Host_RunFrame(float)
-            {"engine.host_runframe", "engine", NULL,
+            CC_SIG("engine.host_runframe", "engine",
                 "55 89 E5 57 56 53 83 EC 3C C6 05 ?? ?? ?? ?? 00 8B 15 ?? ?? ?? ?? F3 0F 10 5D 08 66 0F 7E DF 85 D2",
-                {{CC_STEP_END, 0, 0}}},
+                CC_END),
             // scr_drawloading cleared at the top of Host_RunFrame (x86 absolute operand)
-            {"engine.loading_byte", "engine", NULL,
+            CC_SIG("engine.loading_byte", "engine",
                 "55 89 E5 57 56 53 83 EC 3C C6 05 ?? ?? ?? ?? 00 8B 15 ?? ?? ?? ?? F3 0F 10 5D 08 66 0F 7E DF 85 D2",
-                {{CC_STEP_ABS32, 11, 0}, {CC_STEP_END, 0, 0}}},
+                CC_STEP(CC_STEP_ABS32, 11, 0), CC_END),
         #elif defined(CC_LINUX) && defined(CC_X64)
             // sig runs through `mov edi, 1` (BF 01..): the non-fatal twin is identical up to 0x59.
-            {"engine.sys_error", "engine", NULL,
+            CC_SIG("engine.sys_error", "engine",
                 "55 48 89 E5 48 81 EC D0 00 00 00 84 C0 48 89 B5 58 FF FF FF 48 89 95 60 FF FF FF 48 89 8D 68 FF FF FF 4C 89 85 70 FF FF FF 4C 89 8D 78 FF FF FF 74 20 0F 29 45 80 0F 29 4D 90 0F 29 55 A0 0F 29 5D B0 0F 29 65 C0 0F 29 6D D0 0F 29 75 E0 0F 29 7D F0 48 8D 45 10 48 89 FE BF 01 00 00 00",
-                {{CC_STEP_END, 0, 0}}},
-            {"engine.host_runframe", "engine", NULL,
+                CC_END),
+            CC_SIG("engine.host_runframe", "engine",
                 "55 48 89 E5 41 56 66 41 0F 7E C6 41 55 41 54 53 48 83 EC 20 4C 8B 25 ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 41 8B 94 24 0C 10 00 00 C6 00 00 85 D2 41 0F 95 C5 0F 85 ?? ?? ?? ??",
-                {{CC_STEP_END, 0, 0}}},
+                CC_END),
             // scr_drawloading cleared at the top of Host_RunFrame (x64 GOT slot -> byte)
-            {"engine.loading_byte", "engine", NULL,
+            CC_SIG("engine.loading_byte", "engine",
                 "55 48 89 E5 41 56 66 41 0F 7E C6 41 55 41 54 53 48 83 EC 20 4C 8B 25 ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 41 8B 94 24 0C 10 00 00 C6 00 00 85 D2 41 0F 95 C5 0F 85 ?? ?? ?? ??",
-                {{CC_STEP_REL, 30, 34}, {CC_STEP_DEREF, 0, 0}, {CC_STEP_END, 0, 0}}},
+                CC_STEP(CC_STEP_REL, 30, 34), CC_STEP(CC_STEP_DEREF, 0, 0), CC_END),
         #elif defined(CC_WINDOWS) && defined(CC_X86)
             // __cdecl; sig ends past `push 1` (6A 01) to skip the non-fatal twin.
-            {"engine.sys_error", "engine", NULL,
+            CC_SIG("engine.sys_error", "engine",
                 "55 8B EC 8D 45 0C 50 FF 75 08 6A 01 E8 ?? ?? ?? ?? 83 C4 0C 5D C3",
-                {{CC_STEP_END, 0, 0}}},
-            {"engine.host_runframe", "engine", NULL,
+                CC_END),
+            CC_SIG("engine.host_runframe", "engine",
                 "55 8B EC 83 EC 10 80 3D ?? ?? ?? ?? 00 75 71 83 3D ?? ?? ?? ?? 02 7C 68 83 3D ?? ?? ?? ?? 06",
-                {{CC_STEP_END, 0, 0}}},
+                CC_END),
             // &scr_drawloading - cmp scr_drawloading, 0 / jz / call OnLevelLoadingFinished / mov 0 / jmp / mov 1
-            {"engine.loading_byte", "engine", NULL,
+            CC_SIG("engine.loading_byte", "engine",
                 "80 3D ?? ?? ?? ?? 00 74 15 E8 ?? ?? ?? ?? C6 05 ?? ?? ?? ?? 00 EB 07 C6 05 ?? ?? ?? ?? 01",
-                {{CC_STEP_ABS32, 2, 0}, {CC_STEP_END, 0, 0}}},
+                CC_STEP(CC_STEP_ABS32, 2, 0), CC_END),
             // CBaseClientState::SetSignonState Range-guard cmp edi, 7 + cmp edi,[esi+130h]
-            {"client.setsignon", "engine", NULL,
+            CC_SIG("client.setsignon", "engine",
                 "55 8B EC 56 57 8B 7D 08 8B F1 83 FF 07 0F 87 ?? ?? ?? ?? 83 FF 02 7E ?? 3B BE 30 01 00 00",
-                {{CC_STEP_END, 0, 0}}},
+                CC_END),
         #elif defined(CC_WINDOWS) && defined(CC_X64)
             // sig ends past `mov cl, 1` (B1 01) to skip the non-fatal twin.
-            {"engine.sys_error", "engine", NULL,
+            CC_SIG("engine.sys_error", "engine",
                 "48 89 4C 24 08 48 89 54 24 10 4C 89 44 24 18 4C 89 4C 24 20 48 83 EC 28 48 8B D1 4C 8D 44 24 38 B1 01 E8 ?? ?? ?? ??",
-                {{CC_STEP_END, 0, 0}}},
-            {"engine.host_runframe", "engine", NULL,
+                CC_END),
+            CC_SIG("engine.host_runframe", "engine",
                 "48 83 EC 48 80 3D ?? ?? ?? ?? 00 0F 29 7C 24 20 0F 28 F8 48 89 5C 24 40 75 ?? 83 3D ?? ?? ?? ?? 02 7C ?? 83 3D ?? ?? ?? ?? 06 75 ??",
-                {{CC_STEP_END, 0, 0}}},
+                CC_END),
             // &scr_drawloading
-            {"engine.loading_byte", "engine", NULL,
+            CC_SIG("engine.loading_byte", "engine",
                 "40 38 35 ?? ?? ?? ?? 74 15 E8 ?? ?? ?? ?? 40 88 35 ?? ?? ?? ?? EB 07 C6 05 ?? ?? ?? ?? 01",
-                {{CC_STEP_REL, 3, 7}, {CC_STEP_END, 0, 0}}},
+                CC_STEP(CC_STEP_REL, 3, 7), CC_END),
             // CBaseClientState::SetSignonState cmp edx,7 range-guard + cmp edx,[rcx+disp] (14Ch main, 15Ch x86-64)
-            {"client.setsignon", "engine", NULL,
+            CC_SIG("client.setsignon", "engine",
                 "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 41 8B F0 8B FA 48 8B D9 83 FA 07 0F 87 ?? ?? ?? ?? 83 FA 02 7E ?? 3B 91 ?? ?? ?? ??",
-                {{CC_STEP_END, 0, 0}}},
+                CC_END),
         #endif
     };
 

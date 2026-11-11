@@ -1,12 +1,10 @@
 // cc_signature - cross-platform / cross-arch signature scan + address resolution.
 
 /*
-// declare the targets you want, resolved by symbol first, then by sig if that fails
+// declare the targets you want, each resolved by signature
 static const CCTarget my_targets[] = {
-    // resolves straight to the symbol
-    {"my_func", "server", "_ZSomeSymbol", NULL, {{CC_STEP_END, 0, 0}}},
-    // finds the sig, then follows the operand to the real address
-    {"my_data", "vphysics", NULL, "80 3D ?? ?? ?? ?? 00", {{CC_STEP_ABS32, 2, 0}, {CC_STEP_END, 0, 0}}},
+    CC_SIG("my_func", "server", "55 48 89 E5 41 57", CC_END),
+    CC_SIG("my_data", "vphysics", "80 3D ?? ?? ?? ?? 00", CC_STEP(CC_STEP_ABS32, 2, 0), CC_END),
 };
 
 // this registers the table, do it once before Sig::Init.
@@ -52,10 +50,17 @@ namespace CrashCapture {
     struct CCTarget {
         const char* key; // stable id
         const char* module; // basename: "server", "vphysics"
-        const char* symbol; // tried first, or NULL
-        const char* sig; // IDA pattern fallback, or NULL
+        const char* symbol; // kept for compatibility, targets pass NULL
+        const char* sig; // IDA pattern
         CCResolveStep steps[4]; // applied to the sig hit; END-terminated
     };
+
+    #define CC_STEP(op, a, b) { op, a, b }
+    #define CC_END { CC_STEP_END, 0, 0 }
+    #define CC_SIG(key, module, pattern, ...) \
+        { key, module, NULL, pattern, { __VA_ARGS__ } }
+    #define CC_SYM(key, module, symbol, ...) \
+        { key, module, symbol, NULL, { __VA_ARGS__ } }
 
     namespace Sig {
         // --------- cc-sig-pattern ---
