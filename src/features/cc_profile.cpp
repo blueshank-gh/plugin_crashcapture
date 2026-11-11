@@ -767,7 +767,6 @@ namespace CrashCapture {
 
     struct Anchor {
         const char* module;
-        const char* symbol;
         const char* literal;
         const char* sig;
         void* detour;
@@ -790,28 +789,105 @@ namespace CrashCapture {
             "40 57 48 83 EC 70 48 8B F9 48 8B 0D ?? ?? ?? ?? 48 85 C9 0F 84 ?? ?? ?? ?? 48 8B 01 FF 90 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? ?? 48 89 9C 24 ?? ?? ?? ??";
         #endif
 
+    #if defined(CC_LINUX) && defined(CC_X86)
+        #define CC_SIG_CALL_A \
+            "55 89 E5 57 56 53 83 EC 2C 8B 15 ?? ?? ?? ?? 8B 5D 08 85 D2 0F 95 C0 89 C6 0F 85 ?? ?? ?? ?? " \
+            "E8 ?? ?? ?? ?? 84 C0 75 ?? 8B 45 0C C7 04 24 ?? ?? ?? ?? 89 44 24 04 E8"
+        #define CC_SIG_CALL_B \
+            "55 89 E5 57 56 53 83 EC 2C 8B 15 ?? ?? ?? ?? 8B 5D 08 85 D2 0F 95 C0 89 C6 0F 85 ?? ?? ?? ?? " \
+            "E8 ?? ?? ?? ?? 84 C0 75 ?? A1 ?? ?? ?? ?? 8B 4D 0C 8B 10 89 04 24 89 4C 24 04 FF 92"
+        #define CC_SIG_CALLARGS_A \
+            "55 89 E5 57 56 53 83 EC 2C 8B 15 ?? ?? ?? ?? 85 D2 0F 95 C0 89 C6 0F 85 ?? ?? ?? ?? " \
+            "E8 ?? ?? ?? ?? 84 C0 75 ?? 8B 45 0C C7 04 24 ?? ?? ?? ?? 89 44 24 04 E8"
+        #define CC_SIG_CALLARGS_B \
+            "55 89 E5 57 56 53 83 EC 2C 8B 15 ?? ?? ?? ?? 85 D2 0F 95 C0 89 C6 0F 85 ?? ?? ?? ?? " \
+            "E8 ?? ?? ?? ?? 84 C0 75 ?? A1 ?? ?? ?? ?? 8B 4D 0C 8B 10 89 04 24 89 4C 24 04 FF 92"
+        #define CC_SIG_CALLFINISH \
+            "55 89 E5 56 53 83 EC 20 8B 15 ?? ?? ?? ?? 85 D2 0F 95 C0 89 C6 0F 85 ?? ?? ?? ?? " \
+            "A1 ?? ?? ?? ?? 8B 4D 0C 8B 10 89 04 24 83 C1 02 89 4C 24 04 FF 92 08 01 00 00"
+        #define CC_SIG_CALLFINISHBOOL \
+            "55 89 E5 57 56 53 83 EC 2C 8B 15 ?? ?? ?? ?? 8B 5D 10 85 D2 0F 95 C0 89 C6 0F 85"
+        #define CC_SIG_CALLRETURNS \
+            "55 89 E5 56 53 83 EC 20 8B 15 ?? ?? ?? ?? 85 D2 0F 95 C0 89 C6 0F 85 ?? ?? ?? ?? " \
+            "A1 ?? ?? ?? ?? 8B 4D 10 8B 5D 0C 8B 10 89 04 24 89 4C 24 08 8D 4B 02 89 4C 24 04 FF 92 00 01 00 00"
+        #define CC_SIG_TIMER \
+            "55 89 E5 53 83 EC 14 A1 ?? ?? ?? ?? 8B 4D 08 8B 10 89 04 24 89 4C 24 04 FF 92 94 00 00 00 " \
+            "80 3D ?? ?? ?? ?? 00 0F 85"
+        #define CC_SIG_PROTECTED \
+            "55 89 E5 57 56 53 83 EC 7C 8B 15 ?? ?? ?? ?? 8B 45 14 8B 5D 08 8B 7D 0C 85 D2 0F 95 45 97"
+        #ifdef INTERFACE_PLUGIN
+            #define CC_SIG_NETMSG \
+                "55 89 E5 57 56 53 81 EC 7C 10 00 00 8B 45 10 8B 7D 14 89 85 94 EF FF FF"
+        #else
+            #define CC_SIG_NETMSG \
+                "55 89 E5 57 56 53 83 EC 6C 8B 5D 0C 8B 43 08 89 C2 89 45 A0 8B 43 0C 29"
+        #endif
+    #elif defined(CC_LINUX) && defined(CC_X64)
+        #define CC_SIG_CALL_A \
+            "55 48 89 E5 41 57 41 56 49 89 F6 41 55 41 54 49 89 FC 53 48 83 EC 08 48 8B 1D ?? ?? ?? ?? " \
+            "8B 93 0C 10 00 00 85 D2 41 0F 95 C5 0F 85 ?? ?? ?? ?? E8"
+        #define CC_SIG_CALL_B \
+            "55 48 89 E5 41 57 41 56 41 89 F6 41 55 41 54 49 89 FC 53 48 83 EC 08 48 8B 1D ?? ?? ?? ?? " \
+            "8B 93 0C 10 00 00 85 D2 41 0F 95 C5 0F 85 ?? ?? ?? ?? E8"
+        #define CC_SIG_CALLARGS_A \
+            "55 48 89 E5 41 57 49 89 F7 41 56 41 55 49 89 FD 41 54 53 48 83 EC 18 48 8B 1D ?? ?? ?? ?? " \
+            "8B 93 0C 10 00 00 85 D2 41 0F 95 C6 0F 85"
+        #define CC_SIG_CALLARGS_B \
+            "55 48 89 E5 41 57 41 89 F7 41 56 41 55 49 89 FD 41 54 53 48 83 EC 18 48 8B 1D ?? ?? ?? ?? " \
+            "8B 93 0C 10 00 00 85 D2 41 0F 95 C6 0F 85"
+        #define CC_SIG_CALLFINISH \
+            "55 48 89 E5 41 56 41 55 41 54 41 89 F4 53 48 8B 1D ?? ?? ?? ?? 8B 93 0C 10 00 00 85 D2 " \
+            "41 0F 95 C5 0F 85 ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 41 8D 74 24 02 48 8B 38 48 8B 07 FF 90 10 02 00 00"
+        #define CC_SIG_CALLFINISHBOOL \
+            "55 48 89 E5 41 57 41 89 F7 41 56 41 55 41 54 41 89 D4 53 48 83 EC 08 48"
+        #define CC_SIG_CALLRETURNS \
+            "55 48 89 E5 41 57 41 56 41 89 D6 41 55 41 54 41 89 F4 53 48 83 EC 08 48 8B 1D ?? ?? ?? ?? " \
+            "8B 93 0C 10 00 00 85 D2"
+        #define CC_SIG_TIMER \
+            "55 89 F9 48 89 E5 41 56 41 55 49 89 D5 41 54 49 89 F4 89 CE 53 48 8B 1D ?? ?? ?? ??"
+        #define CC_SIG_PROTECTED \
+            "55 48 89 E5 41 57 41 56 41 89 F6 41 55 41 54 53 48 89 FB 48 83 EC 58 89 55 8C " \
+            "4C 8B 2D ?? ?? ?? ?? 89 4D 88 41 8B 95 0C 10 00 00"
+        #ifdef INTERFACE_PLUGIN
+            #define CC_SIG_NETMSG \
+                "55 48 89 E5 41 57 41 56 41 55 49 89 CD 41 54 53 48 81 EC A8 10 00 00 64"
+        #else
+            #define CC_SIG_NETMSG \
+                "55 48 89 F7 48 89 E5 41 57 41 56 41 55 41 54 53 48 81 EC 98 00 00 00 44"
+        #endif
+    #else
+        #define CC_SIG_CALL_A NULL
+        #define CC_SIG_CALL_B NULL
+        #define CC_SIG_CALLARGS_A NULL
+        #define CC_SIG_CALLARGS_B NULL
+        #define CC_SIG_CALLFINISH NULL
+        #define CC_SIG_CALLFINISHBOOL NULL
+        #define CC_SIG_CALLRETURNS NULL
+        #define CC_SIG_TIMER NULL
+        #define CC_SIG_PROTECTED NULL
+        #define CC_SIG_NETMSG NULL
+    #endif
+
     #ifdef INTERFACE_PLUGIN
         static const char* kGameModule = "server";
-        #define CC_NET_SYMBOL "_ZN18CServerGameClients25GMOD_ReceiveClientMessageEiP7edict_tP7bf_readi"
         #define CC_NET_MARKER "NetMessage(read_sv)"
     #else
         static const char* kGameModule = "client";
-        #define CC_NET_SYMBOL NULL
         #define CC_NET_MARKER "NetMessage(read_cl)"
     #endif
 
     static Anchor g_anchors[] = {
-        { NULL, "_ZN12CLuaGamemode4CallEPKc", "CLuaGamemode::Call", NULL, (void*)h_call_a, (void**)&o_call_a, 0 },
-        { NULL, "_ZN12CLuaGamemode4CallEi", "CLuaGamemode::Call", NULL, (void*)h_call_b, (void**)&o_call_b, 0 },
-        { NULL, "_ZN12CLuaGamemode12CallWithArgsEPKc","CLuaGamemode::CallWithArgs", NULL, (void*)h_args_a, (void**)&o_args_a, 0 },
-        { NULL, "_ZN12CLuaGamemode12CallWithArgsEi", "CLuaGamemode::CallWithArgs", NULL, (void*)h_args_b, (void**)&o_args_b, 0 },
-        { NULL, "_ZN12CLuaGamemode10CallFinishEi", "CLuaGamemode::CallFinish", NULL, (void*)h_finish, (void**)&o_finish, 0 },
-        { NULL, "_ZN12CLuaGamemode14CallFinishBoolEib","CLuaGamemode::CallFinishBool",NULL, (void*)h_finishbool, (void**)&o_finishbool, 0 },
-        { NULL, "_ZN12CLuaGamemode11CallReturnsEii",  "CLuaGamemode::CallReturns", NULL, (void*)h_returns, (void**)&o_returns, 0 },
-        { NULL, "_ZN9GarrysMod3Lua9Libraries5Timer17CallTimerFunctionEiRKSsS4_", "Timer Failed! [%s][%s]\n", NULL, (void*)h_timercb, (void**)&o_timercb, 0 },
-        { "lua_shared", "_ZN13CLuaInterface21CallFunctionProtectedEiib", "CLuaInterface::CallFunctionProtected", NULL, (void*)h_protected, (void**)&o_protected, 0 },
-        { NULL, CC_NET_SYMBOL, CC_NET_MARKER, NULL, (void*)h_netmsg, (void**)&o_netmsg, 0 },
-        { NULL, "_Z13LuaConCommandRK8CCommand", "Warning: Player issued command but is now vanished (Command was \"%s\")\n", kConcmdSig, (void*)h_concmd, (void**)&o_concmd, 0 },
+        { NULL, "CLuaGamemode::Call", CC_SIG_CALL_A, (void*)h_call_a, (void**)&o_call_a, 0 },
+        { NULL, "CLuaGamemode::Call", CC_SIG_CALL_B, (void*)h_call_b, (void**)&o_call_b, 0 },
+        { NULL, "CLuaGamemode::CallWithArgs", CC_SIG_CALLARGS_A, (void*)h_args_a, (void**)&o_args_a, 0 },
+        { NULL, "CLuaGamemode::CallWithArgs", CC_SIG_CALLARGS_B, (void*)h_args_b, (void**)&o_args_b, 0 },
+        { NULL, "CLuaGamemode::CallFinish", CC_SIG_CALLFINISH, (void*)h_finish, (void**)&o_finish, 0 },
+        { NULL, "CLuaGamemode::CallFinishBool", CC_SIG_CALLFINISHBOOL, (void*)h_finishbool, (void**)&o_finishbool, 0 },
+        { NULL, "CLuaGamemode::CallReturns", CC_SIG_CALLRETURNS, (void*)h_returns, (void**)&o_returns, 0 },
+        { NULL, "Timer Failed! [%s][%s]\n", CC_SIG_TIMER, (void*)h_timercb, (void**)&o_timercb, 0 },
+        { "lua_shared", "CLuaInterface::CallFunctionProtected", CC_SIG_PROTECTED, (void*)h_protected, (void**)&o_protected, 0 },
+        { NULL, CC_NET_MARKER, CC_SIG_NETMSG, (void*)h_netmsg, (void**)&o_netmsg, 0 },
+        { NULL, "Warning: Player issued command but is now vanished (Command was \"%s\")\n", kConcmdSig, (void*)h_concmd, (void**)&o_concmd, 0 },
     };
     static const int kAnchorCount = (int)(sizeof(g_anchors) / sizeof(g_anchors[0]));
 
@@ -884,28 +960,33 @@ namespace CrashCapture {
         if (gm) Log::Debug("[CC-PROF] %s -> %s @ %p (%u KiB)\n", kGameModule, gm->name,
                            (void*)gm->base, (unsigned)(gm->size >> 10));
 
-        #if defined(CC_LINUX)
-            for (int i = 0; i < kAnchorCount; ++i) {
-                Anchor& a = g_anchors[i];
-                if (a.target || !a.symbol) continue;
-                uintptr_t addr = Sym::Lookup(a.module, a.symbol);
-                if (addr && Hook::Install((void*)addr, a.detour, a.tramp)) {
-                    a.target = (void*)addr;
-                    ++hooked;
-                }
-                if (addr) Log::Debug("[CC-PROF] sym %s -> %p hooked=%d\n", a.symbol, (void*)addr, (int)(a.target != 0));
-            }
-        #endif
-
         for (int i = 0; i < kAnchorCount; ++i) {
             Anchor& a = g_anchors[i];
             Anchor* b = (i == 0 || i == 2) ? &g_anchors[i + 1] : NULL;
             if (a.target && (!b || b->target)) continue;
 
+            const char* mod = a.module ? a.module : kGameModule;
             uintptr_t addr = 0;
+
             if (b) {
+                uintptr_t fa = a.sig ? Sig::Scan(mod, a.sig) : 0;
+                uintptr_t fb = b->sig ? Sig::Scan(mod, b->sig) : 0;
+                if (fa && fb && fa != fb) {
+                    if (!a.target && Hook::Install((void*)fa, a.detour, a.tramp)) {
+                        a.target = (void*)fa;
+                        ++hooked;
+                        Log::Debug("[CC-PROF] %s (overload 1) -> %p\n", a.literal, (void*)fa);
+                    }
+                    if (!b->target && Hook::Install((void*)fb, b->detour, b->tramp)) {
+                        b->target = (void*)fb;
+                        ++hooked;
+                        Log::Debug("[CC-PROF] %s (overload 2) -> %p\n", a.literal, (void*)fb);
+                    }
+                    continue;
+                }
+
                 uintptr_t fns[4];
-                int n = Sig::AnchorAll(a.module, a.literal, fns, 4);
+                int n = Sig::AnchorAll(mod, a.literal, fns, 4);
                 for (int x = 0; x < n; ++x) // ascending only for determinism; the two detours are interchangeable
                     for (int y = x + 1; y < n; ++y)
                         if (fns[y] < fns[x]) { uintptr_t t = fns[x]; fns[x] = fns[y]; fns[y] = t; }
@@ -917,8 +998,8 @@ namespace CrashCapture {
                 }
                 if (a.target) continue;
             } else {
-                addr = Sig::Anchor(a.module, a.literal);
-                if (!addr && a.sig) addr = Sig::Scan(a.module ? a.module : kGameModule, a.sig);
+                if (a.sig) addr = Sig::Scan(mod, a.sig);
+                if (!addr) addr = Sig::Anchor(mod, a.literal);
             }
 
             for (int j = 0; addr && j < kAnchorCount; ++j)
@@ -931,8 +1012,10 @@ namespace CrashCapture {
             Log::Debug("[CC-PROF] %s -> %p hooked=%d\n", a.literal, (void*)addr, (int)(a.target != 0));
         }
 
-        for (int i = 0; i < kAnchorCount; ++i)
-            if (g_anchors[i].target && g_anchors[i].module == kGameModule) ++gameHooked;
+        for (int i = 0; i < kAnchorCount; ++i) {
+            const char* mod = g_anchors[i].module ? g_anchors[i].module : kGameModule;
+            if (g_anchors[i].target && !strcmp(mod, kGameModule)) ++gameHooked;
+        }
 
         if (!gameHooked) {
             for (int i = 0; i < kAnchorCount; ++i) {

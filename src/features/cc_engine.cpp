@@ -22,11 +22,11 @@ namespace CrashCapture {
     static const CCTarget kEngineTargets[] = {
         #if defined(CC_LINUX) && defined(CC_X86)
             // Sys_Error(const char*, ...)
-            {"engine.sys_error", "engine", "_Z9Sys_ErrorPKcz",
+            {"engine.sys_error", "engine", NULL,
                 "55 89 E5 83 EC 18 8D 45 0C C7 04 24 01 00 00 00 89 44 24 08 8B 45 08 89 44 24 04 E8 ?? ?? ?? ?? C9 C3",
                 {{CC_STEP_END, 0, 0}}},
             // Host_RunFrame(float)
-            {"engine.host_runframe", "engine", "_Z13Host_RunFramef",
+            {"engine.host_runframe", "engine", NULL,
                 "55 89 E5 57 56 53 83 EC 3C C6 05 ?? ?? ?? ?? 00 8B 15 ?? ?? ?? ?? F3 0F 10 5D 08 66 0F 7E DF 85 D2",
                 {{CC_STEP_END, 0, 0}}},
             // scr_drawloading cleared at the top of Host_RunFrame (x86 absolute operand)
