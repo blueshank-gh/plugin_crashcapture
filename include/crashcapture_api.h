@@ -147,7 +147,7 @@ typedef struct CCAPI {
     {
         typedef void* (*CCCreateInterfaceFn)(const char* name, int* returncode);
         static const wchar_t* kNames[] = {
-            L"version.dll",
+            L"version.dll", L"winmm.dll", L"winhttp.dll", L"wininet.dll",
             L"plugin_crashcapture86_sv.dll", L"plugin_crashcapture64_sv.dll",
             L"plugin_crashcapture86_cl.dll", L"plugin_crashcapture64_cl.dll",
             L"gmsv_crashcapture_win32.dll", L"gmsv_crashcapture_win64.dll",
@@ -180,7 +180,12 @@ typedef struct CCAPI {
                     low[n] = (c >= L'A' && c <= L'Z') ? (wchar_t)(c + 32) : c;
                 }
                 low[n] = 0;
-                if (!wcsstr(low, L"crashcapture")) continue;
+
+                int match = wcsstr(low, L"crashcapture") != NULL;
+                for (int i = 0; !match && i < 4; ++i)
+                    match = wcscmp(low, kNames[i]) == 0;
+                if (!match) continue;
+
                 CCCreateInterfaceFn f = (CCCreateInterfaceFn)GetProcAddress(me.hModule, "CreateInterface");
                 if (!f) continue;
                 int rc = 1;
